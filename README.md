@@ -22,6 +22,7 @@ Supabase start applies migrations when creating its database. `db:migrate` appli
 - API health: http://127.0.0.1:3001/health
 - OpenAPI: http://127.0.0.1:3001/openapi.json
 - Local Supabase Studio: http://127.0.0.1:54323
+- Design reference: http://127.0.0.1:1420/#/design (see [docs/DESIGN.md](docs/DESIGN.md))
 
 `npm run dev` starts the API, summary worker, and browser client. To open the Mac application in a separate terminal while those services run:
 

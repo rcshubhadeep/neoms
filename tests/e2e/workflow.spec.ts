@@ -39,7 +39,7 @@ test('two people exchange, recover, summarize, and revoke access', async ({ brow
     await alice.getByRole('button', { name: 'New workspace' }).click();
     await alice.getByLabel('Name', { exact: true }).fill(`Pilot ${suffix}`);
     await alice.getByRole('button', { name: 'Create', exact: true }).click();
-    await expect(alice.getByRole('heading', { name: '# general' })).toBeVisible();
+    await expect(alice.getByRole('heading', { level: 1, name: 'general' })).toBeVisible();
     await alice.getByRole('button', { name: 'Invite a teammate' }).click();
     const invite = alice.getByLabel('Invitation token');
     await expect(invite).not.toHaveValue('Creating invitation…');
@@ -49,7 +49,7 @@ test('two people exchange, recover, summarize, and revoke access', async ({ brow
     await bob.getByRole('button', { name: 'Join', exact: true }).click();
     await bob.getByLabel('Invitation token').fill(token);
     await bob.getByRole('button', { name: 'Join workspace', exact: true }).click();
-    await expect(bob.getByRole('heading', { name: '# general' })).toBeVisible();
+    await expect(bob.getByRole('heading', { level: 1, name: 'general' })).toBeVisible();
     await alice
       .getByRole('textbox', { name: 'Message general', exact: true })
       .fill('Decision: ship the pilot on Friday.');
@@ -104,17 +104,17 @@ test('two people exchange, recover, summarize, and revoke access', async ({ brow
     await alice.getByLabel('Name', { exact: true }).fill('private-project');
     await alice.getByLabel('Private channel').check();
     await alice.getByRole('button', { name: 'Create', exact: true }).click();
-    await expect(alice.getByRole('heading', { name: '◇ private-project' })).toBeVisible();
-    await expect(bob.getByRole('button', { name: '◇ private-project', exact: true })).toHaveCount(
-      0,
-    );
+    await expect(alice.getByRole('heading', { level: 1, name: 'private-project' })).toBeVisible();
+    await expect(
+      bob.getByRole('button', { name: 'private-project (private)', exact: true }),
+    ).toHaveCount(0);
     await alice.getByRole('button', { name: 'Members', exact: true }).click();
     const bobRow = alice.locator('.member-list>div').filter({ hasText: 'Bob' });
     await bobRow.getByRole('button', { name: 'Add', exact: true }).click();
     await expect(bobRow.getByRole('button', { name: 'Remove', exact: true })).toBeVisible();
     await alice.getByRole('button', { name: 'Close dialog' }).click();
-    await bob.getByRole('button', { name: '◇ private-project', exact: true }).click();
-    await expect(bob.getByRole('heading', { name: '◇ private-project' })).toBeVisible();
+    await bob.getByRole('button', { name: 'private-project (private)', exact: true }).click();
+    await expect(bob.getByRole('heading', { level: 1, name: 'private-project' })).toBeVisible();
     await alice
       .getByRole('textbox', { name: 'Message private-project', exact: true })
       .fill('Restricted project context');
@@ -128,9 +128,9 @@ test('two people exchange, recover, summarize, and revoke access', async ({ brow
       .click();
     await alice.getByRole('button', { name: 'Close dialog' }).click();
     await expect(bob.getByText('Restricted project context', { exact: true })).toHaveCount(0);
-    await expect(bob.getByRole('button', { name: '◇ private-project', exact: true })).toHaveCount(
-      0,
-    );
+    await expect(
+      bob.getByRole('button', { name: 'private-project (private)', exact: true }),
+    ).toHaveCount(0);
     await alice.screenshot({ path: 'test-results/workspace.png', fullPage: true });
   } finally {
     await a.close();

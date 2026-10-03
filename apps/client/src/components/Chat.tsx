@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
+import { ArrowUp, Hash, Lock, Pencil, Quote, Sparkles, Trash2, Users } from 'lucide-react';
 import {
   ApiError,
   type Participant,
@@ -19,6 +20,7 @@ import {
 } from '../client';
 import { mergeMessages, advance, readEvents } from '../sync';
 import { explain } from './shared';
+import { Avatar, Badge, Button, Callout, Dot, IconButton, Kbd, SourceChip, Spinner } from './ui';
 export function Chat({
   me,
   channel,
@@ -243,127 +245,213 @@ export function Chat({
   }
   const activeRun = runs.find((r) => r.status === 'queued' || r.status === 'running');
   const failed = runs[0]?.status === 'failed' ? runs[0] : undefined;
+  const time = (iso: string) =>
+    new Date(iso).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  const day = (iso: string) => {
+    const date = new Date(iso);
+    const today = new Date();
+    const yesterday = new Date(today.getTime() - 864e5);
+    if (date.toDateString() === today.toDateString()) return 'Today';
+    if (date.toDateString() === yesterday.toDateString()) return 'Yesterday';
+    return date.toLocaleDateString([], { weekday: 'long', month: 'long', day: 'numeric' });
+  };
+  const ChannelIcon = channel.private ? Lock : Hash;
   return (
     <>
       <header className="chat-header">
-        <div>
-          <p className="eyebrow">YOUR SHARED SPACE</p>
-          <h1>
-            <span>{channel.private ? '◇' : '#'}</span> {channel.name}
-          </h1>
-        </div>
-        <div className="header-actions">
-          <span className={`connection ${status === 'Live' ? 'live' : ''}`}>{status}</span>
-          <button onClick={onMembers}>Members</button>
-          <button
-            className="summary-button"
+        <h1>
+          <ChannelIcon aria-hidden />
+          {channel.name}
+          {channel.private && <span className="sr-only"> (private)</span>}
+        </h1>
+        <div className="chat-header__actions">
+          <span className="connection">
+            <Dot state={status === 'Live' ? 'live' : 'waiting'} />
+            {status}
+          </span>
+          <Button variant="ghost" size="sm" icon={<Users />} onClick={onMembers}>
+            Members
+          </Button>
+          <Button
+            variant="signal"
+            size="sm"
+            icon={activeRun ? <Spinner /> : <Sparkles />}
             disabled={summarizing || !!activeRun}
             onClick={summarize}
           >
-            ✳ {activeRun ? 'Summarizing…' : 'Catch me up'}
-          </button>
+            {activeRun ? 'Summarizing…' : 'Catch me up'}
+          </Button>
         </div>
       </header>
       <div className="conversation">
         <div className="conversation-start">
-          <div className="channel-symbol">#</div>
-          <h2>This is {channel.name}.</h2>
-          <p>A place to share ideas, make decisions, and keep things moving.</p>
-          <span className="start-rule" />
+          <span className="conversation-start__icon">
+            <ChannelIcon aria-hidden />
+          </span>
+          <h2 className="t-title">This is the start of {channel.name}</h2>
+          <p>
+            Messages here stay put, even when you’re away. Agents in this channel only see what is
+            shared in it.
+          </p>
         </div>
         {hasMore && (
-          <button className="load-more" onClick={older}>
-            Load earlier messages
-          </button>
+          <div className="load-more">
+            <Button variant="ghost" size="sm" onClick={older}>
+              Load earlier messages
+            </Button>
+          </div>
         )}
-        {messages.map((message) => (
-          <article
-            className={`message ${message.author_kind === 'agent' ? 'agent-message' : ''} ${message.deleted_at ? 'deleted' : ''}`}
-            id={`message-${message.id}`}
-            key={message.id}
-          >
-            <span className={`avatar ${message.author_kind === 'agent' ? 'agent-avatar' : ''}`}>
-              {message.author_kind === 'agent' ? '✳' : message.author_name[0]?.toUpperCase()}
-            </span>
-            <div className="message-content">
-              <div className="message-meta">
-                <strong>{message.author_name}</strong>
-                {message.author_kind === 'agent' && <span className="agent-badge">ASSISTANT</span>}
-                <time dateTime={message.created_at}>
-                  {new Date(message.created_at).toLocaleTimeString([], {
-                    hour: '2-digit',
-                    minute: '2-digit',
-                  })}
-                </time>
-                {message.revision > 1 && !message.deleted_at && <small>edited</small>}
-              </div>
-              {editing?.id === message.id ? (
-                <form
-                  className="edit-form"
-                  onSubmit={(e) => {
-                    e.preventDefault();
-                    mutate(message);
-                  }}
-                >
-                  <textarea
-                    aria-label="Edit message"
-                    required
-                    value={editBody}
-                    onChange={(e) => setEditBody(e.target.value)}
-                  />
-                  <button className="primary">Save changes</button>
-                  <button type="button" onClick={() => setEditing(null)}>
-                    Cancel
-                  </button>
-                </form>
-              ) : (
-                <p>{message.deleted_at ? 'Message deleted' : message.body}</p>
-              )}
-              {message.citations.length > 0 && !message.stale && (
-                <div className="citations">
-                  <span>Sources</span>
-                  {message.citations.map((id, i) => (
-                    <button key={id} onClick={() => source(id)}>
-                      ↗ {i + 1}
-                    </button>
-                  ))}
+        {messages.map((message, index) => {
+          const previous = messages[index - 1];
+          const newDay = !previous || day(previous.created_at) !== day(message.created_at);
+          const continued =
+            !newDay &&
+            previous.author_id === message.author_id &&
+            message.author_kind === 'human' &&
+            !previous.deleted_at &&
+            Date.parse(message.created_at) - Date.parse(previous.created_at) < 5 * 60e3;
+          const agent = message.author_kind === 'agent';
+          return (
+            <div key={message.id}>
+              {newDay && (
+                <div className="divider" role="separator">
+                  {day(message.created_at)}
                 </div>
               )}
+              <article
+                className={[
+                  'message',
+                  agent && 'message--agent',
+                  continued && 'message--continued',
+                  message.deleted_at && 'message--deleted',
+                ]
+                  .filter(Boolean)
+                  .join(' ')}
+                id={`message-${message.id}`}
+              >
+                {continued ? (
+                  <time className="message__gutter" dateTime={message.created_at}>
+                    {time(message.created_at).replace(/\s?[AP]M$/i, '')}
+                  </time>
+                ) : (
+                  <Avatar name={message.author_name} kind={message.author_kind} />
+                )}
+                <div>
+                  {!continued && (
+                    <div className="message__meta">
+                      <strong>{message.author_name}</strong>
+                      {agent && <Badge>Agent</Badge>}
+                      <time dateTime={message.created_at}>{time(message.created_at)}</time>
+                      {message.revision > 1 && !message.deleted_at && <small>edited</small>}
+                    </div>
+                  )}
+                  {editing?.id === message.id ? (
+                    <form
+                      className="edit-form"
+                      onSubmit={(e) => {
+                        e.preventDefault();
+                        mutate(message);
+                      }}
+                    >
+                      <textarea
+                        className="input"
+                        aria-label="Edit message"
+                        required
+                        autoFocus
+                        value={editBody}
+                        onChange={(e) => setEditBody(e.target.value)}
+                      />
+                      <div>
+                        <Button variant="primary" size="sm">
+                          Save changes
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          type="button"
+                          onClick={() => setEditing(null)}
+                        >
+                          Cancel
+                        </Button>
+                      </div>
+                    </form>
+                  ) : (
+                    <p className="message__body">
+                      {message.deleted_at ? 'Message deleted' : message.body}
+                    </p>
+                  )}
+                  {message.citations.length > 0 &&
+                    (message.stale ? (
+                      <div className="citations">
+                        <Badge tone="warning">Sources changed since this summary</Badge>
+                      </div>
+                    ) : (
+                      <div className="citations">
+                        <span className="t-meta">Sources</span>
+                        {message.citations.map((id, i) => (
+                          <SourceChip
+                            key={id}
+                            mark={<Quote />}
+                            label={`Message ${i + 1}`}
+                            onClick={() => source(id)}
+                          />
+                        ))}
+                      </div>
+                    ))}
+                </div>
+                {message.author_id === me.id &&
+                  !message.deleted_at &&
+                  editing?.id !== message.id && (
+                    <div className="message__actions">
+                      <IconButton
+                        size="xs"
+                        label={`Edit message ${message.body}`}
+                        title="Edit"
+                        onClick={() => {
+                          setEditing(message);
+                          setEditBody(message.body);
+                        }}
+                      >
+                        <Pencil />
+                      </IconButton>
+                      <IconButton
+                        size="xs"
+                        label={`Delete message ${message.body}`}
+                        title="Delete"
+                        onClick={() => mutate(message, true)}
+                      >
+                        <Trash2 />
+                      </IconButton>
+                    </div>
+                  )}
+              </article>
             </div>
-            {message.author_id === me.id && !message.deleted_at && (
-              <div className="message-actions">
-                <button
-                  aria-label={`Edit message ${message.body}`}
-                  onClick={() => {
-                    setEditing(message);
-                    setEditBody(message.body);
-                  }}
-                >
-                  Edit
-                </button>
-                <button
-                  aria-label={`Delete message ${message.body}`}
-                  onClick={() => mutate(message, true)}
-                >
-                  Delete
-                </button>
-              </div>
-            )}
-          </article>
-        ))}
+          );
+        })}
         {pending.map((item) => (
-          <article className="message pending" key={item.requestId}>
-            <span className="avatar">{me.name[0]?.toUpperCase()}</span>
-            <div className="message-content">
-              <div className="message-meta">
+          <article
+            className={`message message--pending ${item.status === 'failed' ? 'message--failed' : ''}`}
+            key={item.requestId}
+          >
+            <Avatar name={me.name} />
+            <div>
+              <div className="message__meta">
                 <strong>{me.name}</strong>
-                <small>{item.status === 'failed' ? 'Not saved' : 'Sending…'}</small>
+                <small>
+                  {item.status === 'failed' ? (
+                    'Not saved'
+                  ) : (
+                    <>
+                      <Spinner /> Sending
+                    </>
+                  )}
+                </small>
               </div>
-              <p>{item.body}</p>
+              <p className="message__body">{item.body}</p>
               {item.status === 'failed' && (
-                <button title={item.error} onClick={() => flush()}>
+                <Button variant="secondary" size="sm" title={item.error} onClick={() => flush()}>
                   Retry send
-                </button>
+                </Button>
               )}
             </div>
           </article>
@@ -371,18 +459,20 @@ export function Chat({
         <div ref={bottom} />
       </div>
       <footer className="composer-area">
-        {error && (
-          <p role="alert" className="error">
-            {error}
-          </p>
-        )}
+        {error && <Callout tone="danger">{error}</Callout>}
         {activeRun && (
-          <div className="run-status">
+          <div className="run-status" role="status">
+            <Avatar name="Assistant" kind="agent" size="xs" />
             <span>
-              ✳ Assistant is{' '}
-              {activeRun.status === 'queued' ? 'waiting to start' : 'reading the conversation'}…
+              <strong>Assistant</strong>{' '}
+              {activeRun.status === 'queued'
+                ? 'is waiting to start'
+                : 'is reading the conversation'}
             </span>
-            <button
+            <Spinner />
+            <Button
+              variant="ghost"
+              size="sm"
               onClick={() =>
                 api(`/conversations/${channel.id}/runs/${activeRun.id}/cancel`, {
                   method: 'POST',
@@ -390,20 +480,21 @@ export function Chat({
               }
             >
               Cancel
-            </button>
+            </Button>
           </div>
         )}
         {failed && !activeRun && (
-          <p className="small error">
+          <Callout tone="danger">
             Summary failed: {failed.error}. You can try Catch me up again.
-          </p>
+          </Callout>
         )}
         <form className="composer" onSubmit={send}>
           <textarea
             aria-label={`Message ${channel.name}`}
-            placeholder={`Message #${channel.name}`}
+            placeholder={`Message ${channel.private ? '' : '#'}${channel.name}`}
             value={draft}
             maxLength={8000}
+            rows={1}
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
@@ -412,14 +503,16 @@ export function Chat({
               }
             }}
           />
-          <div className="composer-bottom">
-            <span>Plain text · Shift + Enter for a new line</span>
-            <button aria-label="Send message" disabled={!draft.trim()}>
-              Send ↑
+          <div className="composer__bar">
+            <span className="composer__hint">
+              <Kbd>⏎</Kbd> to send <Kbd>⇧</Kbd>
+              <Kbd>⏎</Kbd> for a new line
+            </span>
+            <button className="send-btn" aria-label="Send message" disabled={!draft.trim()}>
+              <ArrowUp aria-hidden />
             </button>
           </div>
         </form>
-        <p className="composer-hint">A saved message stays here, even when you leave.</p>
       </footer>
     </>
   );

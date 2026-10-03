@@ -1,12 +1,21 @@
-import { useEffect, useState } from 'react';
+import { lazy, Suspense, useEffect, useState } from 'react';
 import type { Session } from '@supabase/supabase-js';
 import { supabase } from './client';
-import { Mark } from './components/shared';
+import { Mark } from './components/ui';
 import { Login } from './components/Login';
 import { WorkspaceApp } from './components/WorkspaceApp';
+const DesignSystem = lazy(() =>
+  import('./components/DesignSystem').then((m) => ({ default: m.DesignSystem })),
+);
 export function App() {
   const [session, setSession] = useState<Session | null>(null);
   const [loading, setLoading] = useState(true);
+  const [route, setRoute] = useState(location.hash);
+  useEffect(() => {
+    const onHash = () => setRoute(location.hash);
+    addEventListener('hashchange', onHash);
+    return () => removeEventListener('hashchange', onHash);
+  }, []);
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
       setSession(data.session);
@@ -15,10 +24,16 @@ export function App() {
     const { data } = supabase.auth.onAuthStateChange((_event, next) => setSession(next));
     return () => data.subscription.unsubscribe();
   }, []);
+  if (route === '#/design')
+    return (
+      <Suspense>
+        <DesignSystem />
+      </Suspense>
+    );
   if (loading)
     return (
-      <main className="loading">
-        <Mark />
+      <main className="boot">
+        <Mark size={28} />
         <p>Opening your workspace…</p>
       </main>
     );

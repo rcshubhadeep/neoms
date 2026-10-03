@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
+import { ChevronsUpDown, Copy, Hash, Lock, LogIn, LogOut, Plus, UserPlus } from 'lucide-react';
 import type { Session } from '@supabase/supabase-js';
 import type {
   Participant,
@@ -6,7 +7,8 @@ import type {
   Conversation,
 } from '../../../../packages/contracts/src/index';
 import { api, supabase, purgeConversation, purgeUser } from '../client';
-import { explain, Mark } from './shared';
+import { explain } from './shared';
+import { Avatar, Badge, Button, Callout, Dialog, Field, IconButton, Mark, TextArea } from './ui';
 import { Chat } from './Chat';
 export function WorkspaceApp({ session }: { session: Session }) {
   const [me, setMe] = useState<Participant>();
@@ -133,91 +135,109 @@ export function WorkspaceApp({ session }: { session: Session }) {
       setError(explain(e));
     }
   }
+  const titles = {
+    workspace: 'Create a workspace',
+    join: 'Join your team',
+    channel: 'Create a channel',
+    invite: 'Invite a teammate',
+    members: 'Channel members',
+  };
+  const descriptions = {
+    workspace: 'A home for your team’s channels, people, and agents.',
+    join: 'Paste the invitation token a teammate shared with you.',
+    channel: 'Channels keep a topic and its context in one place.',
+    invite: 'Share this single-use token. It expires in seven days.',
+    members: channel ? `Who can read and post in ${channel.name}.` : undefined,
+  };
   return (
     <div className="shell">
       <aside className="sidebar">
-        <div className="brand">
+        <div className="sidebar__workspace">
           <Mark />
-          neoms<span className="preview">PREVIEW</span>
-        </div>
-        <div className="workspace-picker">
           <label className="sr-only" htmlFor="workspace">
             Workspace
           </label>
-          <select
-            id="workspace"
-            value={workspace}
-            onChange={(e) => {
-              setSelected('');
-              setWorkspace(e.target.value);
-            }}
-          >
-            {!workspaces.length && <option value="">Your workspace</option>}
-            {workspaces.map((w) => (
-              <option key={w.id} value={w.id}>
-                {w.name}
-              </option>
-            ))}
-          </select>
-          <div className="workspace-actions">
-            <button onClick={() => open('workspace')}>New workspace</button>
-            <button onClick={() => open('join')}>Join</button>
+          <div className="select">
+            <select
+              id="workspace"
+              value={workspace}
+              onChange={(e) => {
+                setSelected('');
+                setWorkspace(e.target.value);
+              }}
+            >
+              {!workspaces.length && <option value="">Your workspace</option>}
+              {workspaces.map((w) => (
+                <option key={w.id} value={w.id}>
+                  {w.name}
+                </option>
+              ))}
+            </select>
+            <ChevronsUpDown aria-hidden />
           </div>
         </div>
-        <div className="sidebar-heading">
-          CHANNELS
-          {current?.role === 'owner' && (
-            <button aria-label="Create channel" onClick={() => open('channel')}>
-              +
-            </button>
-          )}
+        <div className="sidebar__actions">
+          <Button variant="ghost" size="sm" icon={<Plus />} onClick={() => open('workspace')}>
+            New workspace
+          </Button>
+          <Button variant="ghost" size="sm" icon={<LogIn />} onClick={() => open('join')}>
+            Join
+          </Button>
         </div>
-        <nav aria-label="Channels">
-          {channels.map((c) => (
-            <button
-              className={selected === c.id ? 'channel active' : 'channel'}
-              key={c.id}
-              onClick={() => setSelected(c.id)}
-            >
-              <span>{c.private ? '◇' : '#'}</span>
-              {c.name}
-            </button>
-          ))}
-        </nav>
-        {current?.role === 'owner' && (
-          <button className="invite-button" onClick={() => open('invite')}>
-            ＋ Invite a teammate
-          </button>
-        )}
-        <div className="sidebar-note">
-          <span className="spark">✳</span>
-          <strong>Context, kept together.</strong>
-          <p>Your assistant only sees the channels it belongs to.</p>
+        <div className="sidebar__scroll">
+          <section className="sidebar__section">
+            <div className="sidebar__heading">
+              <span className="t-label">Channels</span>
+              {current?.role === 'owner' && (
+                <IconButton label="Create channel" size="xs" onClick={() => open('channel')}>
+                  <Plus />
+                </IconButton>
+              )}
+            </div>
+            <nav aria-label="Channels">
+              {channels.map((c) => (
+                <button
+                  className="nav-item"
+                  aria-current={selected === c.id ? 'page' : undefined}
+                  key={c.id}
+                  onClick={() => setSelected(c.id)}
+                >
+                  {c.private ? <Lock aria-hidden /> : <Hash aria-hidden />}
+                  <span>
+                    {c.name}
+                    {c.private && <span className="sr-only"> (private)</span>}
+                  </span>
+                </button>
+              ))}
+              {current?.role === 'owner' && (
+                <button className="nav-item" onClick={() => open('invite')}>
+                  <UserPlus aria-hidden />
+                  <span>Invite a teammate</span>
+                </button>
+              )}
+            </nav>
+          </section>
         </div>
-        <div className="profile">
-          <span className="avatar">{(me?.name || session.user.email || '?')[0].toUpperCase()}</span>
+        <div className="sidebar__profile">
+          <Avatar name={me?.name || session.user.email || '?'} />
           <div>
             <strong>{me?.name || 'Loading…'}</strong>
-            <span>Personal account</span>
+            <span>{session.user.email}</span>
           </div>
-          <button
-            title="Sign out"
-            aria-label="Sign out"
+          <IconButton
+            label="Sign out"
+            size="sm"
             onClick={async () => {
               if (me) purgeUser(me.id);
               await supabase.auth.signOut();
             }}
           >
-            ↪
-          </button>
+            <LogOut />
+          </IconButton>
         </div>
       </aside>
-      <main className="main-panel">
-        {error && !dialog && (
-          <div role="alert" className="banner error">
-            {error}
-          </div>
-        )}
+      <main className="main">
+        {error && !dialog && <Callout tone="danger">{error}</Callout>}
         {channel && me ? (
           <Chat
             key={`${me.id}:${channel.id}`}
@@ -231,99 +251,106 @@ export function WorkspaceApp({ session }: { session: Session }) {
             }}
           />
         ) : (
-          <section className="empty-state">
-            <span className="large-mark">✳</span>
-            <p className="eyebrow">MAKE ROOM FOR GOOD WORK</p>
-            <h1>{workspace ? 'Your conversations start here.' : 'A space for your next idea.'}</h1>
+          <section className="empty">
+            <Mark size={40} />
+            <h1 className="t-display">
+              {workspace ? 'Your conversations start here.' : 'A space for your next idea.'}
+            </h1>
             <p>
               {workspace
                 ? 'Choose a channel to get started.'
                 : 'Create a workspace, or join your team with an invitation.'}
             </p>
-            <button className="primary" onClick={() => open(workspace ? 'join' : 'workspace')}>
-              {workspace ? 'Join another workspace' : 'Create a workspace'} ↗
-            </button>
+            <Button
+              variant="primary"
+              size="lg"
+              pill
+              onClick={() => open(workspace ? 'join' : 'workspace')}
+            >
+              {workspace ? 'Join another workspace' : 'Create a workspace'}
+            </Button>
           </section>
         )}
       </main>
       {dialog && (
-        <div className="modal-backdrop">
-          <section role="dialog" aria-modal="true" aria-labelledby="dialog-title" className="modal">
-            <button className="close" aria-label="Close dialog" onClick={() => setDialog(null)}>
-              ×
-            </button>
-            <h2 id="dialog-title">
-              {
-                {
-                  workspace: 'Create a workspace',
-                  join: 'Join your team',
-                  channel: 'Create a channel',
-                  invite: 'Invite a teammate',
-                  members: 'Channel members',
-                }[dialog]
-              }
-            </h2>
-            {error && (
-              <p role="alert" className="error">
-                {error}
-              </p>
-            )}
-            {dialog === 'invite' ? (
-              <>
-                <p>Share this single-use invitation token. It expires in seven days.</p>
-                <textarea
-                  aria-label="Invitation token"
-                  readOnly
-                  value={busy ? 'Creating invitation…' : value}
-                />
-                <p className="small muted">Your teammate can sign in and choose Join.</p>
-              </>
-            ) : dialog === 'members' ? (
-              <div className="member-list">
-                {members.map((m) => (
+        <Dialog
+          title={titles[dialog]}
+          description={descriptions[dialog]}
+          onClose={() => setDialog(null)}
+        >
+          {error && <Callout tone="danger">{error}</Callout>}
+          {dialog === 'invite' ? (
+            <>
+              <TextArea
+                label="Invitation token"
+                readOnly
+                value={busy ? 'Creating invitation…' : value}
+              />
+              <div className="copy-row">
+                <span>Your teammate signs in and chooses Join.</span>
+                <Button
+                  size="sm"
+                  icon={<Copy />}
+                  disabled={busy || !value}
+                  onClick={() => navigator.clipboard?.writeText(value)}
+                >
+                  Copy
+                </Button>
+              </div>
+            </>
+          ) : dialog === 'members' ? (
+            <div className="member-list">
+              {members.map((m) => {
+                const inChannel = channelMembers.some((cm) => cm.id === m.id);
+                return (
                   <div key={m.id}>
+                    <Avatar name={m.name} kind={m.kind} size="sm" />
                     <span>
-                      {m.name} {m.kind === 'agent' && <small>ASSISTANT</small>}
+                      {m.name} {m.kind === 'agent' && <Badge>Agent</Badge>}
                     </span>
                     {current?.role === 'owner' ? (
-                      <button disabled={m.id === me?.id} onClick={() => membership(m)}>
-                        {channelMembers.some((cm) => cm.id === m.id) ? 'Remove' : 'Add'}
-                      </button>
+                      <Button
+                        size="sm"
+                        variant={inChannel ? 'ghost' : 'secondary'}
+                        disabled={m.id === me?.id}
+                        onClick={() => membership(m)}
+                      >
+                        {inChannel ? 'Remove' : 'Add'}
+                      </Button>
                     ) : (
-                      <span>{channelMembers.some((cm) => cm.id === m.id) ? 'Member' : ''}</span>
+                      inChannel && <Badge outline>Member</Badge>
                     )}
                   </div>
-                ))}
-              </div>
-            ) : (
-              <form onSubmit={submit}>
-                <label>
-                  {dialog === 'join' ? 'Invitation token' : 'Name'}
+                );
+              })}
+            </div>
+          ) : (
+            <form onSubmit={submit}>
+              <Field
+                label={dialog === 'join' ? 'Invitation token' : 'Name'}
+                autoFocus
+                required
+                maxLength={dialog === 'join' ? 128 : 80}
+                placeholder={dialog === 'channel' ? 'e.g. launch-planning' : undefined}
+                value={value}
+                onChange={(e) => setValue(e.target.value)}
+              />
+              {dialog === 'channel' && (
+                <label className="check">
                   <input
-                    autoFocus
-                    required
-                    maxLength={dialog === 'join' ? 128 : 80}
-                    value={value}
-                    onChange={(e) => setValue(e.target.value)}
+                    type="checkbox"
+                    checked={privateChannel}
+                    onChange={(e) => setPrivate(e.target.checked)}
                   />
+                  Private channel
                 </label>
-                {dialog === 'channel' && (
-                  <label className="checkbox">
-                    <input
-                      type="checkbox"
-                      checked={privateChannel}
-                      onChange={(e) => setPrivate(e.target.checked)}
-                    />
-                    Private channel
-                  </label>
-                )}
-                <button className="primary" disabled={busy}>
-                  {busy ? 'Saving…' : dialog === 'join' ? 'Join workspace' : 'Create'}
-                </button>
-              </form>
-            )}
-          </section>
-        </div>
+              )}
+              <Button variant="primary" block disabled={busy}>
+                {busy ? 'Saving…' : dialog === 'join' ? 'Join workspace' : 'Create'}
+              </Button>
+            </form>
+          )}
+        </Dialog>
       )}
     </div>
   );

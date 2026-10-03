@@ -1,0 +1,14 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "neoms-dev",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": [
+        "-lc",
+        "source \"$HOME/.nvm/nvm.sh\" && nvm use v24.7.0 >/dev/null && env -u PORT npm run dev"
+      ],
+      "port": 1420
+    }
+  ]
+}

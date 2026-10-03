@@ -1,6 +1,8 @@
 import { useState, type FormEvent } from 'react';
+import { ArrowRight, GitPullRequest } from 'lucide-react';
 import { supabase } from '../client';
-import { explain, Mark } from './shared';
+import { explain } from './shared';
+import { Avatar, Badge, Button, Callout, Field, SourceChip, Wordmark } from './ui';
 export function Login() {
   const [signUp, setSignUp] = useState(false);
   const [email, setEmail] = useState('');
@@ -25,85 +27,87 @@ export function Login() {
     }
   }
   return (
-    <main className="login">
-      <section className="intro">
-        <div className="brand">
-          <Mark />
-          neoms
-        </div>
-        <div>
-          <p className="eyebrow">A LITTLE LESS CATCHING UP.</p>
-          <h1>
-            Good work
-            <br />
-            starts with
-            <br />a shared space.
-          </h1>
-          <p className="lead">
-            Conversations that stay with you.
-            <br />
-            An assistant that stays in the loop.
+    <main className="auth">
+      <section className="auth__story">
+        <Wordmark />
+        <div className="auth__copy">
+          <p className="t-label">A workspace for people and agents</p>
+          <h1 className="t-display auth__headline">Where your team and its agents do the work.</h1>
+          <p className="auth__lead">
+            Conversations that keep their context, and agents that join them as teammates — not
+            tools kept outside the room.
           </p>
+          <div className="vignette card" aria-hidden="true">
+            <div className="vignette__row">
+              <Avatar name="Maya" size="sm" />
+              <div>
+                <strong>Maya</strong>
+                Checkout is timing out for some EU customers.
+              </div>
+            </div>
+            <div className="vignette__row">
+              <Avatar name="Triage" kind="agent" size="sm" />
+              <div>
+                <strong>
+                  Triage <Badge>Agent</Badge>
+                </strong>
+                On it. Reproduced in staging, fix is up for review.
+                <SourceChip mark={<GitPullRequest />} id="#482" label="Retry payment intent" />
+              </div>
+            </div>
+          </div>
         </div>
-        <p className="intro-footer">PEOPLE + CONTEXT + POSSIBILITIES</p>
+        <p className="auth__foot">Private development preview · Mac and browser</p>
       </section>
-      <section className="login-panel">
-        <form onSubmit={submit}>
-          <p className="eyebrow">YOUR TEAM, IN ONE PLACE</p>
-          <h2>{signUp ? 'Make yourself at home.' : 'Welcome back.'}</h2>
-          <p className="muted">
+      <section className="auth__panel">
+        <form className="auth__form" onSubmit={submit}>
+          <h2 className="t-title">{signUp ? 'Create your account' : 'Welcome back'}</h2>
+          <p>
             {signUp
-              ? 'Create an account to join your team.'
+              ? 'Join your team’s workspace in a minute.'
               : 'Sign in to pick up where you left off.'}
           </p>
           {signUp && (
-            <label>
-              Your name
-              <input
-                required
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                maxLength={80}
-                autoComplete="name"
-              />
-            </label>
-          )}
-          <label>
-            Email
-            <input
-              type="email"
+            <Field
+              label="Your name"
               required
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              autoComplete="email"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              maxLength={80}
+              autoComplete="name"
             />
-          </label>
-          <label>
-            Password
-            <input
-              type="password"
-              required
-              minLength={8}
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              autoComplete={signUp ? 'new-password' : 'current-password'}
-            />
-          </label>
-          {error && (
-            <p role="alert" className="error">
-              {error}
-            </p>
           )}
-          <button
-            className="primary"
+          <Field
+            label="Email"
+            type="email"
+            required
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            autoComplete="email"
+          />
+          <Field
+            label="Password"
+            type="password"
+            required
+            minLength={8}
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            autoComplete={signUp ? 'new-password' : 'current-password'}
+          />
+          {error && <Callout tone="danger">{error}</Callout>}
+          <Button
+            variant="primary"
+            size="lg"
+            block
             aria-label={signUp ? 'Create account' : 'Sign in'}
             disabled={busy}
+            trailing={<ArrowRight />}
           >
-            {busy ? 'One moment…' : signUp ? 'Create account' : 'Sign in'} <span>↗</span>
-          </button>
+            {busy ? 'One moment…' : signUp ? 'Create account' : 'Sign in'}
+          </Button>
           <button
             type="button"
-            className="text-button"
+            className="auth__switch"
             onClick={() => {
               setSignUp(!signUp);
               setError('');
@@ -112,7 +116,6 @@ export function Login() {
             {signUp ? 'Already have an account? Sign in' : 'New here? Create an account'}
           </button>
         </form>
-        <p className="small muted">Private development preview · Mac + browser</p>
       </section>
     </main>
   );
