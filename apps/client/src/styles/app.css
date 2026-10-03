@@ -687,3 +687,120 @@
     display: none;
   }
 }
+
+/* Preserve the inverse agent mark when avatars appear inside navigation. */
+.nav-item .avatar--agent svg {
+  color: var(--text-inverse);
+}
+
+/* Workspace administration shares the conversation shell and design tokens. */
+.workspace-settings {
+  overflow: auto;
+  height: 100%;
+  padding: var(--space-8);
+}
+.settings-header {
+  display: grid;
+  gap: var(--space-3);
+  justify-items: start;
+}
+.settings-header h1 {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.settings-header h1 svg {
+  width: 22px;
+}
+.settings-tabs {
+  display: flex;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  padding: var(--space-5) 0;
+  border-bottom: 1px solid var(--border-subtle);
+  margin-bottom: var(--space-5);
+}
+.settings-section {
+  display: grid;
+  gap: var(--space-4);
+  justify-items: start;
+  width: 100%;
+}
+.settings-section h2 {
+  font-size: var(--text-lg);
+  font-weight: var(--weight-semibold);
+}
+.settings-section h3 {
+  font-size: var(--text-md);
+  margin-top: var(--space-4);
+}
+.settings-section--narrow {
+  max-width: 620px;
+}
+.settings-section form,
+.settings-members,
+.settings-token {
+  width: 100%;
+}
+.settings-member {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) 0;
+  border-bottom: 1px solid var(--border-subtle);
+  flex-wrap: wrap;
+}
+.settings-member__identity {
+  flex: 1;
+  min-width: 100px;
+  display: grid;
+}
+.settings-member__identity span,
+.settings-role {
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+}
+.settings-role {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.settings-role select {
+  background: var(--surface-raised);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  padding: var(--space-1);
+}
+.settings-actions {
+  display: flex;
+  gap: var(--space-3);
+  margin-top: var(--space-4);
+}
+.settings-notice {
+  color: var(--success-text);
+  margin-bottom: var(--space-4);
+}
+.settings-table-wrap {
+  width: 100%;
+  overflow-x: auto;
+}
+.settings-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-sm);
+  text-align: left;
+}
+.settings-table th,
+.settings-table td {
+  padding: var(--space-3);
+  border-bottom: 1px solid var(--border-subtle);
+  white-space: nowrap;
+}
+.settings-table th {
+  font-weight: var(--weight-medium);
+}
+@media (max-width: 760px) {
+  .workspace-settings {
+    padding: var(--space-4);
+  }
+}

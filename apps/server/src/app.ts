@@ -5,9 +5,17 @@ import { bodyLimit } from 'hono/body-limit';
 import { createClient } from '@supabase/supabase-js';
 import { z } from 'zod';
 import { pool, transaction } from '../../../packages/db/src/index.js';
+import * as administration from '../../../packages/domain/src/administration.js';
 import * as domain from '../../../packages/domain/src/index.js';
 import {
   ParticipantOutput,
+  MemberInput,
+  MemberOutput,
+  DmInput,
+  LlmInput,
+  LlmOutput,
+  InvitationOutput,
+  UsageOutput,
   WorkspaceOutput,
   ConversationOutput,
   MessageOutput,
@@ -87,7 +95,7 @@ app.get('/v1/workspaces', async (c) =>
   c.json(
     (
       await pool.query(
-        'select w.id,w.name,wm.role from workspaces w join workspace_members wm on wm.workspace_id=w.id where wm.participant_id=$1 order by w.created_at',
+        'select w.id,w.name,wm.role from workspaces w join workspace_members wm on wm.workspace_id=w.id where wm.participant_id=$1 and wm.enabled order by w.created_at',
         [c.get('participant').id],
       )
     ).rows,
@@ -108,11 +116,11 @@ app.get('/v1/workspaces/:workspace/members', async (c) =>
   c.json(
     await transaction(async (tx) => {
       const workspace = id(c.req.param('workspace'));
-      await domain.workspaceAccess(tx, c.get('participant').id, workspace);
+      const actor = await domain.workspaceAccess(tx, c.get('participant').id, workspace);
       return (
         await tx.query(
-          'select p.id,p.name,p.kind,wm.role from participants p join workspace_members wm on wm.participant_id=p.id where wm.workspace_id=$1 order by p.name',
-          [workspace],
+          'select p.id,p.name,p.kind,wm.role,wm.enabled from participants p join workspace_members wm on wm.participant_id=p.id where wm.workspace_id=$1 and (wm.enabled or $2) order by p.name',
+          [workspace, actor.role !== 'member'],
         )
       ).rows;
     }),
@@ -125,7 +133,7 @@ app.get('/v1/workspaces/:workspace/conversations', async (c) =>
       await domain.workspaceAccess(tx, c.get('participant').id, workspace);
       return (
         await tx.query(
-          'select c.id,c.name,c.private,c.workspace_id from conversations c join conversation_members cm on cm.conversation_id=c.id where c.workspace_id=$1 and cm.participant_id=$2 order by c.created_at',
+          `select c.id,case when c.kind='dm' then (select p.name from conversation_members peer join participants p on p.id=peer.participant_id where peer.conversation_id=c.id and peer.participant_id<>$2 limit 1) else c.name end name,c.private,c.workspace_id,c.kind,c.created_by from conversations c join conversation_members cm on cm.conversation_id=c.id where c.workspace_id=$1 and cm.participant_id=$2 order by c.created_at`,
           [workspace, c.get('participant').id],
         )
       ).rows;
@@ -144,6 +152,56 @@ app.post('/v1/workspaces/:workspace/conversations', async (c) => {
     201,
   );
 });
+app.post('/v1/workspaces/:workspace/dms', async (c) => {
+  const input = DmInput.parse(await c.req.json());
+  return c.json(
+    await administration.directMessage(
+      c.get('participant').id,
+      id(c.req.param('workspace')),
+      input.participantId,
+    ),
+    201,
+  );
+});
+app.patch('/v1/workspaces/:workspace/members/:participant', async (c) => {
+  const input = MemberInput.parse(await c.req.json());
+  return c.json(
+    await administration.updateMember(
+      c.get('participant').id,
+      id(c.req.param('workspace')),
+      id(c.req.param('participant')),
+      input,
+    ),
+  );
+});
+app.get('/v1/workspaces/:workspace/invitations', async (c) =>
+  c.json(await administration.invitations(c.get('participant').id, id(c.req.param('workspace')))),
+);
+app.delete('/v1/workspaces/:workspace/invitations/:invitation', async (c) =>
+  c.json(
+    await administration.revokeInvitation(
+      c.get('participant').id,
+      id(c.req.param('workspace')),
+      id(c.req.param('invitation')),
+    ),
+  ),
+);
+app.get('/v1/workspaces/:workspace/llm', async (c) =>
+  c.json(await administration.llmSettings(c.get('participant').id, id(c.req.param('workspace')))),
+);
+app.patch('/v1/workspaces/:workspace/llm', async (c) => {
+  const input = LlmInput.parse(await c.req.json());
+  return c.json(
+    await administration.setLlmSettings(
+      c.get('participant').id,
+      id(c.req.param('workspace')),
+      input,
+    ),
+  );
+});
+app.get('/v1/workspaces/:workspace/usage', async (c) =>
+  c.json(await administration.usage(c.get('participant').id, id(c.req.param('workspace')))),
+);
 app.get('/v1/conversations/:conversation/members', async (c) =>
   c.json(
     await transaction(async (tx) => {
@@ -151,7 +209,7 @@ app.get('/v1/conversations/:conversation/members', async (c) =>
       await domain.channelAccess(tx, c.get('participant').id, conversation);
       return (
         await tx.query(
-          'select p.id,p.name,p.kind from participants p join conversation_members cm on cm.participant_id=p.id where cm.conversation_id=$1 order by p.name',
+          'select p.id,p.name,p.kind from participants p join conversation_members cm on cm.participant_id=p.id join workspace_members wm on wm.participant_id=p.id and wm.workspace_id=(select workspace_id from conversations where id=$1) where cm.conversation_id=$1 and wm.enabled order by p.name',
           [conversation],
         )
       ).rows;
@@ -308,6 +366,13 @@ app.get('/v1/conversations/:conversation/events', async (c) => {
 
 // Schemas are generated from the same validation used by handlers.
 const routes: [string, string, z.ZodType?][] = [
+  ['post', '/workspaces/{workspace}/dms', DmInput],
+  ['patch', '/workspaces/{workspace}/members/{participant}', MemberInput],
+  ['get', '/workspaces/{workspace}/invitations'],
+  ['delete', '/workspaces/{workspace}/invitations/{invitation}'],
+  ['get', '/workspaces/{workspace}/llm'],
+  ['patch', '/workspaces/{workspace}/llm', LlmInput],
+  ['get', '/workspaces/{workspace}/usage'],
   ['get', '/me'],
   ['get', '/workspaces'],
   ['post', '/workspaces', NameInput],
@@ -351,34 +416,47 @@ app.get('/openapi.json', (c) => {
       });
     if (method === 'get' && path.endsWith('/messages'))
       parameters.push({ name: 'before', in: 'query', schema: { type: 'string', format: 'uuid' } });
-    const output =
-      path === '/me'
-        ? ParticipantOutput
-        : path === '/workspaces'
-          ? method === 'get'
-            ? z.array(WorkspaceOutput)
-            : WorkspaceOutput
-          : path.endsWith('/invitations')
-            ? z.object({ token: z.string(), expiresInDays: z.number() })
-            : path === '/invitations/accept'
-              ? z.object({ workspaceId: z.uuid() })
-              : path.endsWith('/members')
-                ? z.array(ParticipantOutput)
-                : path.endsWith('/conversations')
-                  ? method === 'get'
-                    ? z.array(ConversationOutput)
-                    : ConversationOutput
-                  : path.endsWith('/messages')
+    const output = path.endsWith('/llm')
+      ? LlmOutput
+      : path.endsWith('/usage')
+        ? UsageOutput
+        : path.endsWith('/dms')
+          ? ConversationOutput
+          : method === 'patch' && path.endsWith('/members/{participant}')
+            ? z.object({ ok: z.boolean() })
+            : method === 'delete' && !path.endsWith('/messages/{message}')
+              ? z.object({ ok: z.boolean() })
+              : path.endsWith('/invitations') && method === 'get'
+                ? z.array(InvitationOutput)
+                : path === '/me'
+                  ? ParticipantOutput
+                  : path === '/workspaces'
                     ? method === 'get'
-                      ? SnapshotOutput
-                      : MessageOutput
-                    : path.endsWith('/messages/{message}')
-                      ? MessageOutput
-                      : path.endsWith('/changes')
-                        ? ChangesOutput
-                        : path.endsWith('/runs')
-                          ? RunOutput
-                          : z.object({ ok: z.boolean() });
+                      ? z.array(WorkspaceOutput)
+                      : WorkspaceOutput
+                    : path.endsWith('/invitations')
+                      ? z.object({ token: z.string(), expiresInDays: z.number() })
+                      : path === '/invitations/accept'
+                        ? z.object({ workspaceId: z.uuid() })
+                        : path.endsWith('/members')
+                          ? path.startsWith('/workspaces/')
+                            ? z.array(MemberOutput)
+                            : z.array(ParticipantOutput)
+                          : path.endsWith('/conversations')
+                            ? method === 'get'
+                              ? z.array(ConversationOutput)
+                              : ConversationOutput
+                            : path.endsWith('/messages')
+                              ? method === 'get'
+                                ? SnapshotOutput
+                                : MessageOutput
+                              : path.endsWith('/messages/{message}')
+                                ? MessageOutput
+                                : path.endsWith('/changes')
+                                  ? ChangesOutput
+                                  : path.endsWith('/runs')
+                                    ? RunOutput
+                                    : z.object({ ok: z.boolean() });
     const success =
       method === 'post' && path.endsWith('/runs')
         ? '202'
@@ -386,6 +464,7 @@ app.get('/openapi.json', (c) => {
             (path === '/workspaces' ||
               path.endsWith('/invitations') ||
               path.endsWith('/conversations') ||
+              path.endsWith('/dms') ||
               path.endsWith('/messages'))
           ? '201'
           : '200';

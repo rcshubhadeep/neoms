@@ -16,8 +16,64 @@ export const SummaryOutput = z.object({
   citations: z.array(z.uuid()).min(1).max(50),
 });
 export type Participant = { id: string; name: string; kind: 'human' | 'agent' };
-export type Workspace = { id: string; name: string; role: string };
-export type Conversation = { id: string; workspace_id: string; name: string; private: boolean };
+export type Role = 'owner' | 'admin' | 'member';
+export type Member = Participant & { role: Role; enabled: boolean };
+export const MemberInput = z
+  .object({ role: z.enum(['admin', 'member']).optional(), enabled: z.boolean().optional() })
+  .refine((v) => v.role !== undefined || v.enabled !== undefined);
+export const DmInput = z.object({ participantId: z.uuid() });
+export const LlmInput = z
+  .object({
+    provider: z.enum(['test', 'anthropic']),
+    model: z.string().trim().min(1).max(160),
+    apiKey: z.string().trim().min(1).max(4096).optional(),
+    removeKey: z.boolean().default(false),
+  })
+  .refine((v) => !(v.apiKey && v.removeKey));
+export type LlmSettings = {
+  provider: 'test' | 'anthropic';
+  model: string;
+  hasKey: boolean;
+  revision: number;
+  updated_at: string;
+};
+export type Invitation = {
+  id: string;
+  expires_at: string;
+  accepted_by: string | null;
+  revoked_at: string | null;
+  created_at: string;
+};
+export type MemberUsage = {
+  id: string;
+  name: string;
+  enabled: boolean;
+  attempts: string;
+  unknown_attempts: string;
+  input_tokens: string;
+  output_tokens: string;
+  cache_read_tokens: string;
+  cache_write_tokens: string;
+};
+export type UsageReport = {
+  members: MemberUsage[];
+  models: {
+    provider: string;
+    model: string;
+    attempts: string;
+    input_tokens: string;
+    output_tokens: string;
+  }[];
+};
+export type Workspace = { id: string; name: string; role: Role };
+export type Conversation = {
+  id: string;
+  workspace_id: string;
+  name: string;
+  private: boolean;
+  kind: 'channel' | 'dm';
+  created_by: string | null;
+};
 export type Message = {
   id: string;
   conversation_id: string;
@@ -80,13 +136,15 @@ export const ParticipantOutput = z.object({
 export const WorkspaceOutput = z.object({
   id: z.uuid(),
   name: z.string(),
-  role: z.enum(['owner', 'member']),
+  role: z.enum(['owner', 'admin', 'member']),
 });
 export const ConversationOutput = z.object({
   id: z.uuid(),
   workspace_id: z.uuid(),
   name: z.string(),
   private: z.boolean(),
+  kind: z.enum(['channel', 'dm']),
+  created_by: z.uuid().nullable(),
 });
 export const MessageOutput = z.object({
   id: z.uuid(),
@@ -125,4 +183,47 @@ export const ChangesOutput = z.object({
   events: z.array(EventOutput),
   cursor: z.string(),
   hasMore: z.boolean(),
+});
+
+export const MemberOutput = ParticipantOutput.extend({
+  role: z.enum(['owner', 'admin', 'member']),
+  enabled: z.boolean(),
+});
+export const LlmOutput = z.object({
+  provider: z.enum(['test', 'anthropic']),
+  model: z.string(),
+  hasKey: z.boolean(),
+  revision: z.number().int(),
+  updated_at: z.string(),
+});
+export const InvitationOutput = z.object({
+  id: z.uuid(),
+  expires_at: z.string(),
+  accepted_by: z.uuid().nullable(),
+  revoked_at: z.string().nullable(),
+  created_at: z.string(),
+});
+export const UsageOutput = z.object({
+  members: z.array(
+    z.object({
+      id: z.uuid(),
+      name: z.string(),
+      enabled: z.boolean(),
+      attempts: z.string(),
+      unknown_attempts: z.string(),
+      input_tokens: z.string(),
+      output_tokens: z.string(),
+      cache_read_tokens: z.string(),
+      cache_write_tokens: z.string(),
+    }),
+  ),
+  models: z.array(
+    z.object({
+      provider: z.string(),
+      model: z.string(),
+      attempts: z.string(),
+      input_tokens: z.string(),
+      output_tokens: z.string(),
+    }),
+  ),
 });

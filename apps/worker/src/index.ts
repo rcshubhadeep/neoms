@@ -10,7 +10,9 @@ import {
   completeRun,
   channelAccess,
   updateRun,
+  DomainError,
 } from '../../../packages/domain/src/index.js';
+import { beginUsage, reportUsage } from '../../../packages/domain/src/administration.js';
 import { summarize } from './provider.js';
 await startQueue();
 await boss.work<{ runId: string }>(SUMMARY_QUEUE, { pollingIntervalSeconds: 1 }, async (jobs) => {
@@ -18,7 +20,16 @@ await boss.work<{ runId: string }>(SUMMARY_QUEUE, { pollingIntervalSeconds: 1 },
     try {
       const context = await prepareRun(job.data.runId);
       if (!context) continue;
-      const output = await summarize(context.messages, context.run.provider);
+      if (!context.messages.length) throw new Error('Send a message before asking for a summary');
+      const attempt = await beginUsage(job.data.runId);
+      let output;
+      try {
+        output = await summarize(context.messages, context.configuration, (tokens) =>
+          reportUsage(attempt, tokens),
+        );
+      } finally {
+        await reportUsage(attempt);
+      }
       await completeRun(job.data.runId, context.messages, output);
     } catch (error) {
       await transaction(async (tx) => {
@@ -33,7 +44,9 @@ await boss.work<{ runId: string }>(SUMMARY_QUEUE, { pollingIntervalSeconds: 1 },
             'failed',
             error instanceof Error ? error.message : 'Summary failed',
           );
-        } catch {
+        } catch (accessError) {
+          if (!(accessError instanceof DomainError && accessError.status === 403))
+            throw accessError;
           await tx.query(
             "update agent_runs set status='cancelled',error='Channel access was revoked' where id=$1",
             [run.id],

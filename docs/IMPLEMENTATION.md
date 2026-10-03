@@ -35,3 +35,13 @@ This is a local development product, not a production deployment.
 - Two Playwright tests pass: the two-user invitation/messaging/offline recovery/summary/revocation workflow, and account creation through the interface.
 - The built Mac app signs in to local Supabase, reads the same workspace as the browser, sends a message visible to Bob in the browser, and receives Bob's browser reply through the live stream.
 - The local `.env` is ignored; hosted-model credentials are absent from the client source/bundle. The assistant remains in explicitly labeled test mode.
+
+## Milestone 2: workspace essentials
+
+[Execution plan](MILESTONE_2.md) completed; the later agent-runtime proposal is [AGENT_PLATFORM_ROADMAP.md](AGENT_PLATFORM_ROADMAP.md).
+
+The shared client now provides channel creation, people/channel/DM navigation, private one-to-one messaging, and workspace settings. Owners appoint admins; owners/admins manage allowed member statuses, invitations, BYOK configuration, and usage. Active membership is checked by API discovery, messaging, SSE delivery, and worker context/publication. Disabling affects only the selected workspace and cancels unpublished runs. DMs are deduplicated for a normalized unordered pair and cannot gain additional participants or agents.
+
+Workspace provider/model/key configuration replaces global LLM environment configuration. Keys are AES-256-GCM encrypted using the installation secret shared by API/worker; metadata endpoints never return plaintext or ciphertext. Runs pin a configuration revision. Usage records belong to provider attempts, with reported input/output/cache tokens captured before validating generated answers. Unknown usage remains explicit. See [administration/deployment notes](WORKSPACE_ADMINISTRATION.md).
+
+Current verification: 31 integration/synchronization tests, three browser workflows, format/lint/type/build checks, and a Mac release bundle. Live hosted-model verification and production deployment/signing remain outstanding. New administration flows are browser-tested; native packaging uses the same client/API.

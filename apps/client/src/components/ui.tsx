@@ -1,6 +1,7 @@
 import {
   useEffect,
   useRef,
+  useId,
   type ButtonHTMLAttributes,
   type ReactNode,
   type InputHTMLAttributes,
@@ -127,28 +128,55 @@ export const Spinner = () => <LoaderCircle className="spinner" aria-hidden />;
 export function Field({
   label,
   hint,
+  id,
   ...rest
 }: InputHTMLAttributes<HTMLInputElement> & { label: string; hint?: string }) {
+  const generatedId = useId();
+  const inputId = id || generatedId;
   return (
-    <label className="field">
-      <span className="field__label">{label}</span>
-      <input className="input" {...rest} />
-      {hint && <span className="field__hint">{hint}</span>}
-    </label>
+    <div className="field">
+      <label className="field__label" htmlFor={inputId}>
+        {label}
+      </label>
+      <input
+        className="input"
+        {...rest}
+        id={inputId}
+        aria-describedby={hint ? `${inputId}-hint` : rest['aria-describedby']}
+      />
+      {hint && (
+        <span className="field__hint" id={`${inputId}-hint`}>
+          {hint}
+        </span>
+      )}
+    </div>
   );
 }
-
 export function TextArea({
   label,
   hint,
+  id,
   ...rest
 }: TextareaHTMLAttributes<HTMLTextAreaElement> & { label: string; hint?: string }) {
+  const generatedId = useId();
+  const inputId = id || generatedId;
   return (
-    <label className="field">
-      <span className="field__label">{label}</span>
-      <textarea className="input" {...rest} />
-      {hint && <span className="field__hint">{hint}</span>}
-    </label>
+    <div className="field">
+      <label className="field__label" htmlFor={inputId}>
+        {label}
+      </label>
+      <textarea
+        className="input"
+        {...rest}
+        id={inputId}
+        aria-describedby={hint ? `${inputId}-hint` : rest['aria-describedby']}
+      />
+      {hint && (
+        <span className="field__hint" id={`${inputId}-hint`}>
+          {hint}
+        </span>
+      )}
+    </div>
   );
 }
 
@@ -176,25 +204,70 @@ export function Dialog({
   children: ReactNode;
 }) {
   const ref = useRef<HTMLElement>(null);
+  const titleId = useId();
+  const openerRef = useRef(document.activeElement as HTMLElement | null);
   useEffect(() => {
-    if (!ref.current?.contains(document.activeElement)) ref.current?.focus();
+    const opener = openerRef.current;
+    if (!ref.current?.contains(document.activeElement)) {
+      const first = ref.current?.querySelector<HTMLElement>(
+        'input:not(:disabled), textarea:not(:disabled), select:not(:disabled)',
+      );
+      (
+        first ||
+        ref.current?.querySelector<HTMLElement>('button:not(:disabled)') ||
+        ref.current
+      )?.focus();
+    }
+    return () => {
+      if (opener?.isConnected) opener.focus();
+    };
   }, []);
+  function keyDown(e: React.KeyboardEvent) {
+    if (e.key === 'Escape') {
+      e.stopPropagation();
+      onClose();
+    }
+    if (e.key !== 'Tab' || !ref.current) return;
+    const targets = [
+      ...ref.current.querySelectorAll<HTMLElement>(
+        'button:not(:disabled), input:not(:disabled), textarea:not(:disabled), select:not(:disabled), a[href], [tabindex="0"]',
+      ),
+    ].filter((el) => el.getClientRects().length);
+    const first = targets[0],
+      last = targets.at(-1);
+    if (!first) {
+      e.preventDefault();
+      ref.current.focus();
+    } else if (
+      e.shiftKey &&
+      (document.activeElement === first || document.activeElement === ref.current)
+    ) {
+      e.preventDefault();
+      last?.focus();
+    } else if (
+      !e.shiftKey &&
+      (document.activeElement === last || document.activeElement === ref.current)
+    ) {
+      e.preventDefault();
+      first.focus();
+    }
+  }
   return (
     <div
       className="dialog-backdrop"
       onMouseDown={(e) => e.target === e.currentTarget && onClose()}
-      onKeyDown={(e) => e.key === 'Escape' && onClose()}
+      onKeyDown={keyDown}
     >
       <section
         ref={ref}
         tabIndex={-1}
         role="dialog"
         aria-modal="true"
-        aria-labelledby="dialog-title"
+        aria-labelledby={titleId}
         className="dialog"
       >
         <header className="dialog__header">
-          <h2 id="dialog-title" className="dialog__title">
+          <h2 id={titleId} className="dialog__title">
             {title}
           </h2>
           <IconButton label="Close dialog" size="sm" onClick={onClose}>

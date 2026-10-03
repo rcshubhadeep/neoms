@@ -1,6 +1,7 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { pool, transaction, enqueueSummary, type Tx } from '../../db/src/index.js';
-import type { Message, AgentRun } from '../../contracts/src/index.js';
+import { openKey } from './secrets.js';
+import type { Message, AgentRun, Role } from '../../contracts/src/index.js';
 
 export class DomainError extends Error {
   constructor(
@@ -20,11 +21,12 @@ export async function identify(authId: string, name: string) {
 }
 export async function workspaceAccess(tx: Tx, user: string, workspace: string, owner = false) {
   const { rows } = await tx.query(
-    'select role from workspace_members where workspace_id=$1 and participant_id=$2',
+    'select role,enabled from workspace_members where workspace_id=$1 and participant_id=$2 for share',
     [workspace, user],
   );
-  if (!rows[0] || (owner && rows[0].role !== 'owner'))
+  if (!rows[0]?.enabled || (owner && !['owner', 'admin'].includes(rows[0].role)))
     throw new DomainError(403, 'Workspace access denied');
+  return rows[0] as { role: Role; enabled: boolean };
 }
 export async function channelAccess(tx: Tx, user: string, conversation: string) {
   // Every mutation and membership change takes this lock. Events commit in sequence order.
@@ -34,7 +36,7 @@ export async function channelAccess(tx: Tx, user: string, conversation: string) 
   const channel = rows[0];
   if (!channel) throw new DomainError(404, 'Conversation not found');
   const allowed = await tx.query(
-    'select 1 from conversation_members cm join workspace_members wm on wm.participant_id=cm.participant_id and wm.workspace_id=$3 where cm.conversation_id=$1 and cm.participant_id=$2',
+    'select 1 from conversation_members cm join workspace_members wm on wm.participant_id=cm.participant_id and wm.workspace_id=$3 where cm.conversation_id=$1 and cm.participant_id=$2 and wm.enabled for share of wm',
     [conversation, user, channel.workspace_id],
   );
   if (!allowed.rowCount) throw new DomainError(403, 'Conversation access denied');
@@ -45,18 +47,22 @@ export async function createWorkspace(user: string, name: string) {
     const workspace = (
       await tx.query('insert into workspaces(name) values($1) returning *', [name])
     ).rows[0];
-    await tx.query("insert into workspace_members values($1,$2,'owner')", [workspace.id, user]);
+    await tx.query(
+      "insert into workspace_members(workspace_id,participant_id,role) values($1,$2,'owner')",
+      [workspace.id, user],
+    );
+    await tx.query('insert into workspace_llm(workspace_id) values($1)', [workspace.id]);
     const agent = (
       await tx.query("insert into participants(kind,name) values('agent','Assistant') returning id")
     ).rows[0];
-    await tx.query("insert into workspace_members values($1,$2,'member')", [
-      workspace.id,
-      agent.id,
-    ]);
+    await tx.query(
+      "insert into workspace_members(workspace_id,participant_id,role) values($1,$2,'member')",
+      [workspace.id, agent.id],
+    );
     const conversation = (
       await tx.query(
-        "insert into conversations(workspace_id,name) values($1,'general') returning *",
-        [workspace.id],
+        "insert into conversations(workspace_id,name,created_by) values($1,'general',$2) returning *",
+        [workspace.id, user],
       )
     ).rows[0];
     await tx.query('insert into conversation_members values($1,$2),($1,$3)', [
@@ -74,21 +80,21 @@ export async function createChannel(
   privateChannel: boolean,
 ) {
   return transaction(async (tx) => {
-    await workspaceAccess(tx, user, workspace, true);
+    await workspaceAccess(tx, user, workspace);
     const channel = (
       await tx.query(
-        'insert into conversations(workspace_id,name,private) values($1,$2,$3) returning *',
-        [workspace, name, privateChannel],
+        'insert into conversations(workspace_id,name,private,created_by) values($1,$2,$3,$4) returning *',
+        [workspace, name, privateChannel, user],
       )
     ).rows[0];
     if (privateChannel) {
       await tx.query(
-        "insert into conversation_members select $1,wm.participant_id from workspace_members wm join participants p on p.id=wm.participant_id where wm.workspace_id=$2 and (wm.participant_id=$3 or p.kind='agent')",
+        'insert into conversation_members select $1,wm.participant_id from workspace_members wm join participants p on p.id=wm.participant_id where wm.workspace_id=$2 and wm.enabled and wm.participant_id=$3',
         [channel.id, workspace, user],
       );
     } else
       await tx.query(
-        'insert into conversation_members select $1,participant_id from workspace_members where workspace_id=$2',
+        'insert into conversation_members select $1,participant_id from workspace_members where workspace_id=$2 and enabled',
         [channel.id, workspace],
       );
     return channel;
@@ -113,15 +119,24 @@ export async function acceptInvite(user: string, token: string) {
     if (
       !invitation ||
       invitation.accepted_by ||
+      invitation.revoked_at ||
       new Date(invitation.expires_at).getTime() <= Date.now()
     )
       throw new DomainError(400, 'Invitation is expired or already used');
-    await tx.query("insert into workspace_members values($1,$2,'member') on conflict do nothing", [
-      invitation.workspace_id,
-      user,
-    ]);
+    const existing = (
+      await tx.query(
+        'select enabled from workspace_members where workspace_id=$1 and participant_id=$2 for share',
+        [invitation.workspace_id, user],
+      )
+    ).rows[0];
+    if (existing && !existing.enabled)
+      throw new DomainError(403, 'Your workspace membership is disabled');
     await tx.query(
-      'insert into conversation_members select id,$2 from conversations where workspace_id=$1 and not private on conflict do nothing',
+      "insert into workspace_members(workspace_id,participant_id,role) values($1,$2,'member') on conflict do nothing",
+      [invitation.workspace_id, user],
+    );
+    await tx.query(
+      "insert into conversation_members select id,$2 from conversations where workspace_id=$1 and kind='channel' and not private on conflict do nothing",
       [invitation.workspace_id, user],
     );
     await tx.query('update invitations set accepted_by=$2 where id=$1', [invitation.id, user]);
@@ -136,7 +151,11 @@ export async function changeMembership(
 ) {
   return transaction(async (tx) => {
     const channel = await channelAccess(tx, user, conversation);
-    await workspaceAccess(tx, user, channel.workspace_id, true);
+    if (channel.kind === 'dm')
+      throw new DomainError(403, 'Direct message membership cannot be changed');
+    const access = await workspaceAccess(tx, user, channel.workspace_id);
+    if (access.role === 'member' && channel.created_by !== user)
+      throw new DomainError(403, 'Channel management denied');
     await workspaceAccess(tx, participant, channel.workspace_id);
     const target = (
       await tx.query(
@@ -320,7 +339,9 @@ export async function changes(
 }
 export async function startSummary(user: string, conversation: string, requestId: string) {
   return transaction(async (tx) => {
-    await channelAccess(tx, user, conversation);
+    const channel = await channelAccess(tx, user, conversation);
+    if (channel.kind === 'dm')
+      throw new DomainError(400, 'Assistants are not available in direct messages');
     const existing = (
       await tx.query(
         'select id,status,provider,error from agent_runs where conversation_id=$1 and requester_id=$2 and request_id=$3',
@@ -335,10 +356,17 @@ export async function startSummary(user: string, conversation: string, requestId
       )
     ).rows[0];
     if (!agent) throw new DomainError(400, 'Assistant has no access to this channel');
+    const config = (
+      await tx.query('select * from workspace_llm where workspace_id=$1 for share', [
+        channel.workspace_id,
+      ])
+    ).rows[0];
+    if (!config || (config.provider !== 'test' && !config.key_ciphertext))
+      throw new DomainError(400, 'Ask a workspace admin to configure the LLM key');
     const run = (
       await tx.query(
-        'insert into agent_runs(conversation_id,requester_id,agent_id,request_id,provider) values($1,$2,$3,$4,$5) returning id,status,provider,error',
-        [conversation, user, agent.id, requestId, process.env.AI_PROVIDER || 'test'],
+        'insert into agent_runs(conversation_id,requester_id,agent_id,request_id,provider,model,config_revision) values($1,$2,$3,$4,$5,$6,$7) returning id,status,provider,error',
+        [conversation, user, agent.id, requestId, config.provider, config.model, config.revision],
       )
     ).rows[0];
     await enqueueSummary(tx, run.id);
@@ -369,7 +397,8 @@ export async function prepareRun(id: string) {
     try {
       await channelAccess(tx, run.requester_id, run.conversation_id);
       await channelAccess(tx, run.agent_id, run.conversation_id);
-    } catch {
+    } catch (error) {
+      if (!(error instanceof DomainError && error.status === 403)) throw error;
       await tx.query(
         "update agent_runs set status='cancelled',error='Channel access was revoked' where id=$1",
         [id],
@@ -382,6 +411,34 @@ export async function prepareRun(id: string) {
       )
     )
       return null;
+    const config = (
+      await tx.query(
+        'select l.* from workspace_llm l join conversations c on c.workspace_id=l.workspace_id where c.id=$1 for share of l',
+        [run.conversation_id],
+      )
+    ).rows[0];
+    if (run.config_revision === null) {
+      await tx.query('update agent_runs set config_revision=$2,provider=$3,model=$4 where id=$1', [
+        id,
+        config.revision,
+        config.provider,
+        config.model,
+      ]);
+      Object.assign(run, {
+        config_revision: config.revision,
+        provider: config.provider,
+        model: config.model,
+      });
+    }
+    if (config.revision !== run.config_revision) {
+      await updateRun(tx, id, 'cancelled', 'Workspace model configuration changed');
+      return null;
+    }
+    let apiKey: string | undefined;
+    if (config.provider !== 'test') {
+      if (!config.key_ciphertext) throw new Error('Workspace LLM key is missing');
+      apiKey = openKey(config.key_ciphertext);
+    }
     await updateRun(tx, id, 'running');
     const messages: Message[] = (
       await tx.query(
@@ -396,7 +453,11 @@ export async function prepareRun(id: string) {
       bounded.unshift(message);
       size += message.body.length;
     }
-    return { run, messages: bounded };
+    return {
+      run,
+      messages: bounded,
+      configuration: { provider: config.provider as string, model: config.model as string, apiKey },
+    };
   });
 }
 export async function completeRun(
@@ -410,7 +471,8 @@ export async function completeRun(
     try {
       await channelAccess(tx, run.requester_id, run.conversation_id);
       await channelAccess(tx, run.agent_id, run.conversation_id);
-    } catch {
+    } catch (error) {
+      if (!(error instanceof DomainError && error.status === 403)) throw error;
       await tx.query(
         "update agent_runs set status='cancelled',error='Channel access was revoked' where id=$1",
         [id],
@@ -423,6 +485,16 @@ export async function completeRun(
       )
     )
       return;
+    const config = (
+      await tx.query(
+        'select l.revision from workspace_llm l join conversations c on c.workspace_id=l.workspace_id where c.id=$1 for share of l',
+        [run.conversation_id],
+      )
+    ).rows[0];
+    if (config.revision !== run.config_revision) {
+      await updateRun(tx, id, 'cancelled', 'Workspace model configuration changed');
+      return;
+    }
     const sourceIds = new Set(sources.map((m) => m.id));
     if (output.citations.some((c) => !sourceIds.has(c)))
       throw new Error('Model cited an unknown source');

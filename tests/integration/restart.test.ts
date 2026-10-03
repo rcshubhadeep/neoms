@@ -32,7 +32,7 @@ async function stop(child: ChildProcess) {
 }
 function launch(file: string) {
   const child = spawn(process.execPath, ['--env-file=.env', '--import', 'tsx', file], {
-    env: { ...process.env, PORT: '3002', AI_PROVIDER: 'test' },
+    env: { ...process.env, PORT: '3002' },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   child.stdout?.resume();

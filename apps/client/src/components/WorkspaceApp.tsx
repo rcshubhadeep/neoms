@@ -1,21 +1,40 @@
-import { useCallback, useEffect, useState, type FormEvent } from 'react';
-import { ChevronsUpDown, Copy, Hash, Lock, LogIn, LogOut, Plus, UserPlus } from 'lucide-react';
+import { useCallback, useEffect, useState, useRef, type FormEvent } from 'react';
+import {
+  ChevronsUpDown,
+  Copy,
+  Hash,
+  Lock,
+  LogIn,
+  LogOut,
+  Plus,
+  UserPlus,
+  Settings,
+  MessageSquare,
+} from 'lucide-react';
 import type { Session } from '@supabase/supabase-js';
 import type {
   Participant,
   Workspace,
   Conversation,
+  Member,
 } from '../../../../packages/contracts/src/index';
 import { api, supabase, purgeConversation, purgeUser } from '../client';
 import { explain } from './shared';
 import { Avatar, Badge, Button, Callout, Dialog, Field, IconButton, Mark, TextArea } from './ui';
 import { Chat } from './Chat';
+import { WorkspaceSettings } from './WorkspaceSettings';
 export function WorkspaceApp({ session }: { session: Session }) {
   const [me, setMe] = useState<Participant>();
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [workspace, setWorkspace] = useState('');
   const [channels, setChannels] = useState<Conversation[]>([]);
   const [selected, setSelected] = useState('');
+  const [settings, setSettings] = useState(false);
+  const [people, setPeople] = useState<Member[]>([]);
+  const workspaceRef = useRef(workspace);
+  workspaceRef.current = workspace;
+  const channelsRef = useRef(channels);
+  channelsRef.current = channels;
   const [error, setError] = useState('');
   const [dialog, setDialog] = useState<
     'workspace' | 'join' | 'channel' | 'invite' | 'members' | null
@@ -35,17 +54,35 @@ export function WorkspaceApp({ session }: { session: Session }) {
   const loadChannels = useCallback(async () => {
     if (!workspace) {
       setChannels([]);
+      setPeople([]);
       setSelected('');
       return;
     }
     try {
-      const rows = await api<Conversation[]>(`/workspaces/${workspace}/conversations`);
+      const [rows, directory] = await Promise.all([
+        api<Conversation[]>(`/workspaces/${workspace}/conversations`),
+        api<Member[]>(`/workspaces/${workspace}/members`),
+      ]);
+      if (workspaceRef.current !== workspace) return;
+      for (const old of channelsRef.current)
+        if (old.workspace_id === workspace && !rows.some((c) => c.id === old.id) && me)
+          purgeConversation(me.id, old.id);
+      setPeople(directory.filter((m) => m.enabled));
       setChannels(rows);
       setSelected((old) => (rows.some((c) => c.id === old) ? old : rows[0]?.id || ''));
     } catch (e) {
-      setError(explain(e));
+      if (workspaceRef.current !== workspace) return;
+      if (e instanceof Error && 'status' in e && e.status === 403) {
+        for (const old of channelsRef.current)
+          if (old.workspace_id === workspace && me) purgeConversation(me.id, old.id);
+        setChannels([]);
+        setPeople([]);
+        setSelected('');
+        setSettings(false);
+        await loadWorkspaces();
+      } else setError(explain(e));
     }
-  }, [workspace]);
+  }, [workspace, me, loadWorkspaces]);
   useEffect(() => {
     api<Participant>('/me')
       .then(setMe)
@@ -54,9 +91,26 @@ export function WorkspaceApp({ session }: { session: Session }) {
   }, [loadWorkspaces]);
   useEffect(() => {
     loadChannels();
-    const interval = setInterval(() => loadChannels(), 5000);
+    const interval = setInterval(() => {
+      void loadChannels();
+      void loadWorkspaces().catch((e) => setError(explain(e)));
+    }, 5000);
     return () => clearInterval(interval);
-  }, [loadChannels]);
+  }, [loadChannels, loadWorkspaces]);
+  async function messagePerson(person: Member) {
+    setError('');
+    try {
+      const row = await api<Conversation>(`/workspaces/${workspace}/dms`, {
+        method: 'POST',
+        body: JSON.stringify({ participantId: person.id }),
+      });
+      await loadChannels();
+      setSelected(row.id);
+      setSettings(false);
+    } catch (e) {
+      setError(explain(e));
+    }
+  }
   async function open(which: typeof dialog) {
     setError('');
     setValue('');
@@ -163,6 +217,9 @@ export function WorkspaceApp({ session }: { session: Session }) {
               value={workspace}
               onChange={(e) => {
                 setSelected('');
+                setChannels([]);
+                setPeople([]);
+                setSettings(false);
                 setWorkspace(e.target.value);
               }}
             >
@@ -188,28 +245,39 @@ export function WorkspaceApp({ session }: { session: Session }) {
           <section className="sidebar__section">
             <div className="sidebar__heading">
               <span className="t-label">Channels</span>
-              {current?.role === 'owner' && (
+              {current && (
                 <IconButton label="Create channel" size="xs" onClick={() => open('channel')}>
                   <Plus />
                 </IconButton>
               )}
             </div>
             <nav aria-label="Channels">
-              {channels.map((c) => (
-                <button
-                  className="nav-item"
-                  aria-current={selected === c.id ? 'page' : undefined}
-                  key={c.id}
-                  onClick={() => setSelected(c.id)}
-                >
-                  {c.private ? <Lock aria-hidden /> : <Hash aria-hidden />}
-                  <span>
-                    {c.name}
-                    {c.private && <span className="sr-only"> (private)</span>}
-                  </span>
+              {channels
+                .filter((c) => c.kind === 'channel')
+                .map((c) => (
+                  <button
+                    className="nav-item"
+                    aria-current={selected === c.id ? 'page' : undefined}
+                    key={c.id}
+                    onClick={() => {
+                      setSelected(c.id);
+                      setSettings(false);
+                    }}
+                  >
+                    {c.private ? <Lock aria-hidden /> : <Hash aria-hidden />}
+                    <span>
+                      {c.name}
+                      {c.private && <span className="sr-only"> (private)</span>}
+                    </span>
+                  </button>
+                ))}
+              {current && (
+                <button className="nav-item" onClick={() => open('channel')}>
+                  <Plus aria-hidden />
+                  <span>New channel</span>
                 </button>
-              ))}
-              {current?.role === 'owner' && (
+              )}
+              {current && current.role !== 'member' && (
                 <button className="nav-item" onClick={() => open('invite')}>
                   <UserPlus aria-hidden />
                   <span>Invite a teammate</span>
@@ -217,6 +285,78 @@ export function WorkspaceApp({ session }: { session: Session }) {
               )}
             </nav>
           </section>
+          {current && (
+            <section className="sidebar__section">
+              <div className="sidebar__heading">
+                <span className="t-label">Direct messages</span>
+              </div>
+              <nav aria-label="Direct messages">
+                {channels
+                  .filter((c) => c.kind === 'dm')
+                  .map((c) => (
+                    <button
+                      className="nav-item"
+                      key={c.id}
+                      aria-current={!settings && selected === c.id ? 'page' : undefined}
+                      onClick={() => {
+                        setSelected(c.id);
+                        setSettings(false);
+                      }}
+                    >
+                      <MessageSquare aria-hidden />
+                      <span>{c.name}</span>
+                    </button>
+                  ))}
+              </nav>
+            </section>
+          )}
+          {current && (
+            <section className="sidebar__section">
+              <div className="sidebar__heading">
+                <span className="t-label">People</span>
+              </div>
+              <nav aria-label="Workspace members">
+                {people.map((p) => (
+                  <button
+                    className="nav-item"
+                    key={p.id}
+                    disabled={p.id === me?.id || p.kind === 'agent'}
+                    aria-label={
+                      p.id === me?.id
+                        ? `${p.name} (you)`
+                        : p.kind === 'agent'
+                          ? `${p.name} (agent)`
+                          : `Message ${p.name}`
+                    }
+                    onClick={() => messagePerson(p)}
+                  >
+                    <Avatar name={p.name} kind={p.kind} size="xs" />
+                    <span>
+                      {p.name}
+                      {p.id === me?.id ? ' (you)' : ''}
+                    </span>
+                    {p.kind === 'agent' && <Badge>Agent</Badge>}
+                  </button>
+                ))}
+              </nav>
+            </section>
+          )}
+          {current && current.role !== 'member' && (
+            <section className="sidebar__section">
+              <button
+                className="nav-item"
+                aria-current={settings ? 'page' : undefined}
+                onClick={() => {
+                  setSettings(true);
+                  setDialog(null);
+                  setError('');
+                }}
+              >
+                <Settings aria-hidden />
+                <span>Workspace settings</span>
+              </button>
+            </section>
+          )}
         </div>
         <div className="sidebar__profile">
           <Avatar name={me?.name || session.user.email || '?'} />
@@ -238,7 +378,18 @@ export function WorkspaceApp({ session }: { session: Session }) {
       </aside>
       <main className="main">
         {error && !dialog && <Callout tone="danger">{error}</Callout>}
-        {channel && me ? (
+        {settings && current && current.role !== 'member' && me ? (
+          <WorkspaceSettings
+            key={current.id}
+            workspace={current}
+            me={me.id}
+            onBack={() => setSettings(false)}
+            onChanged={() => {
+              void loadWorkspaces();
+              void loadChannels();
+            }}
+          />
+        ) : channel && me ? (
           <Chat
             key={`${me.id}:${channel.id}`}
             me={me}
@@ -300,7 +451,7 @@ export function WorkspaceApp({ session }: { session: Session }) {
             </>
           ) : dialog === 'members' ? (
             <div className="member-list">
-              {members.map((m) => {
+              {(channel?.kind === 'dm' ? channelMembers : members).map((m) => {
                 const inChannel = channelMembers.some((cm) => cm.id === m.id);
                 return (
                   <div key={m.id}>
@@ -308,7 +459,8 @@ export function WorkspaceApp({ session }: { session: Session }) {
                     <span>
                       {m.name} {m.kind === 'agent' && <Badge>Agent</Badge>}
                     </span>
-                    {current?.role === 'owner' ? (
+                    {channel?.kind !== 'dm' &&
+                    (current?.role !== 'member' || channel?.created_by === me?.id) ? (
                       <Button
                         size="sm"
                         variant={inChannel ? 'ghost' : 'secondary'}

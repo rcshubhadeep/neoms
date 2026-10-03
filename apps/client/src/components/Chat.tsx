@@ -1,5 +1,15 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
-import { ArrowUp, Hash, Lock, Pencil, Quote, Sparkles, Trash2, Users } from 'lucide-react';
+import {
+  ArrowUp,
+  Hash,
+  Lock,
+  Pencil,
+  Quote,
+  Sparkles,
+  Trash2,
+  Users,
+  MessageSquare,
+} from 'lucide-react';
 import {
   ApiError,
   type Participant,
@@ -255,14 +265,15 @@ export function Chat({
     if (date.toDateString() === yesterday.toDateString()) return 'Yesterday';
     return date.toLocaleDateString([], { weekday: 'long', month: 'long', day: 'numeric' });
   };
-  const ChannelIcon = channel.private ? Lock : Hash;
+  const direct = channel.kind === 'dm';
+  const ChannelIcon = direct ? MessageSquare : channel.private ? Lock : Hash;
   return (
     <>
       <header className="chat-header">
         <h1>
           <ChannelIcon aria-hidden />
           {channel.name}
-          {channel.private && <span className="sr-only"> (private)</span>}
+          {channel.private && !direct && <span className="sr-only"> (private)</span>}
         </h1>
         <div className="chat-header__actions">
           <span className="connection">
@@ -272,15 +283,17 @@ export function Chat({
           <Button variant="ghost" size="sm" icon={<Users />} onClick={onMembers}>
             Members
           </Button>
-          <Button
-            variant="signal"
-            size="sm"
-            icon={activeRun ? <Spinner /> : <Sparkles />}
-            disabled={summarizing || !!activeRun}
-            onClick={summarize}
-          >
-            {activeRun ? 'Summarizing…' : 'Catch me up'}
-          </Button>
+          {!direct && (
+            <Button
+              variant="signal"
+              size="sm"
+              icon={activeRun ? <Spinner /> : <Sparkles />}
+              disabled={summarizing || !!activeRun}
+              onClick={summarize}
+            >
+              {activeRun ? 'Summarizing…' : 'Catch me up'}
+            </Button>
+          )}
         </div>
       </header>
       <div className="conversation">
@@ -288,10 +301,15 @@ export function Chat({
           <span className="conversation-start__icon">
             <ChannelIcon aria-hidden />
           </span>
-          <h2 className="t-title">This is the start of {channel.name}</h2>
+          <h2 className="t-title">
+            {direct
+              ? `Your conversation with ${channel.name}`
+              : `This is the start of ${channel.name}`}
+          </h2>
           <p>
-            Messages here stay put, even when you’re away. Agents in this channel only see what is
-            shared in it.
+            {direct
+              ? 'Only the two participants can read and post here. Assistants are not added to direct messages.'
+              : 'Messages here stay put, even when you’re away. Agents in this channel only see what is shared in it.'}
           </p>
         </div>
         {hasMore && (

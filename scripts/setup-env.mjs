@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 const raw = execFileSync('./node_modules/.bin/supabase', ['status', '-o', 'json'], {
@@ -22,6 +23,18 @@ for (const [key, value] of Object.entries(values)) {
   const line = `${key}=${value}`;
   const re = new RegExp(`^${key}=.*$`, 'm');
   output = re.test(output) ? output.replace(re, line) : `${output}\n${line}\n`;
+}
+const installedKey = output.match(/^LLM_ENCRYPTION_KEY=(.*)$/m)?.[1].trim();
+if (installedKey && !/^[0-9a-f]{64}$/i.test(installedKey)) {
+  throw new Error(
+    'Existing LLM_ENCRYPTION_KEY is invalid; correct it explicitly rather than rotating it automatically',
+  );
+}
+if (!installedKey) {
+  const line = `LLM_ENCRYPTION_KEY=${randomBytes(32).toString('hex')}`;
+  output = /^LLM_ENCRYPTION_KEY=.*$/m.test(output)
+    ? output.replace(/^LLM_ENCRYPTION_KEY=.*$/m, line)
+    : `${output}\n${line}\n`;
 }
 writeFileSync('.env', output, { mode: 0o600 });
 console.log('Local settings written to .env (credentials omitted).');
