@@ -1,0 +1,10 @@
+node_modules
+dist
+**/dist
+**/target
+package-lock.json
+Cargo.lock
+playwright-report
+test-results
+supabase/.temp
+apps/client/src-tauri/gen/

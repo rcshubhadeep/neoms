@@ -1,0 +1,22 @@
+{
+  "compilerOptions": {
+    "target": "ES2023",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "outDir": "dist",
+    "rootDir": ".",
+    "resolveJsonModule": true,
+    "types": ["node"]
+  },
+  "include": [
+    "apps/server/src/**/*.ts",
+    "apps/worker/src/**/*.ts",
+    "packages/**/*.ts",
+    "scripts/**/*.ts",
+    "tests/integration/**/*.ts"
+  ],
+  "exclude": ["node_modules", "dist"]
+}
