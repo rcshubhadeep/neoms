@@ -354,8 +354,6 @@ export async function changes(
 export async function startSummary(user: string, conversation: string, requestId: string) {
   return transaction(async (tx) => {
     const channel = await channelAccess(tx, user, conversation);
-    if (channel.kind === 'dm')
-      throw new DomainError(400, 'Assistants are not available in direct messages');
     const existing = (
       await tx.query(
         'select id,status,provider,error from agent_runs where conversation_id=$1 and requester_id=$2 and request_id=$3',
@@ -365,8 +363,10 @@ export async function startSummary(user: string, conversation: string, requestId
     if (existing) return existing;
     const agent = (
       await tx.query(
-        "select p.id from participants p join conversation_members cm on cm.participant_id=p.id where cm.conversation_id=$1 and p.kind='agent' order by p.id limit 1",
-        [conversation],
+        channel.kind === 'dm'
+          ? "select p.id from participants p join workspace_members wm on wm.participant_id=p.id where wm.workspace_id=$1 and wm.enabled and p.kind='agent' order by p.id limit 1"
+          : "select p.id from participants p join conversation_members cm on cm.participant_id=p.id where cm.conversation_id=$1 and p.kind='agent' order by p.id limit 1",
+        [channel.kind === 'dm' ? channel.workspace_id : conversation],
       )
     ).rows[0];
     if (!agent) throw new DomainError(400, 'Assistant has no access to this channel');
@@ -387,6 +387,22 @@ export async function startSummary(user: string, conversation: string, requestId
     await emit(tx, conversation, 'run.updated', run);
     return run;
   });
+}
+async function summaryAccess(
+  tx: Tx,
+  run: { requester_id: string; agent_id: string; conversation_id: string },
+) {
+  const conversation = await channelAccess(tx, run.requester_id, run.conversation_id);
+  if (conversation.kind !== 'dm') {
+    await channelAccess(tx, run.agent_id, run.conversation_id);
+    return;
+  }
+  // A participant requests a bounded summary; the assistant does not become a DM member.
+  await workspaceAccess(tx, run.agent_id, conversation.workspace_id);
+  const agent = await tx.query("select 1 from participants where id=$1 and kind='agent'", [
+    run.agent_id,
+  ]);
+  if (!agent.rowCount) throw new DomainError(403, 'Assistant access denied');
 }
 export async function updateRun(
   tx: Tx,
@@ -409,8 +425,7 @@ export async function prepareRun(id: string) {
     const run = (await tx.query('select * from agent_runs where id=$1', [id])).rows[0];
     if (!run || ['completed', 'cancelled'].includes(run.status)) return null;
     try {
-      await channelAccess(tx, run.requester_id, run.conversation_id);
-      await channelAccess(tx, run.agent_id, run.conversation_id);
+      await summaryAccess(tx, run);
     } catch (error) {
       if (!(error instanceof DomainError && error.status === 403)) throw error;
       await tx.query(
@@ -470,7 +485,13 @@ export async function prepareRun(id: string) {
     return {
       run,
       messages: bounded,
-      configuration: { provider: config.provider as string, model: config.model as string, apiKey },
+      configuration: {
+        provider: config.provider as string,
+        model: config.model as string,
+        baseUrl: config.base_url as string | null,
+        tokenLimitParameter: config.token_limit_parameter as 'max_tokens' | 'max_completion_tokens',
+        apiKey,
+      },
     };
   });
 }
@@ -483,8 +504,7 @@ export async function completeRun(
     const run = (await tx.query('select * from agent_runs where id=$1', [id])).rows[0];
     if (!run || ['completed', 'cancelled'].includes(run.status)) return;
     try {
-      await channelAccess(tx, run.requester_id, run.conversation_id);
-      await channelAccess(tx, run.agent_id, run.conversation_id);
+      await summaryAccess(tx, run);
     } catch (error) {
       if (!(error instanceof DomainError && error.status === 403)) throw error;
       await tx.query(

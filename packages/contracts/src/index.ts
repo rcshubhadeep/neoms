@@ -23,17 +23,59 @@ export const MemberInput = z
   .object({ role: z.enum(['admin', 'member']).optional(), enabled: z.boolean().optional() })
   .refine((v) => v.role !== undefined || v.enabled !== undefined);
 export const DmInput = z.object({ participantId: z.uuid() });
+export const LlmProvider = z.enum(['test', 'anthropic', 'openai-compatible']);
+export const LlmBaseUrl = z
+  .string()
+  .trim()
+  .max(2048)
+  .url()
+  .refine((value) => {
+    try {
+      const url = new URL(value);
+      const local = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
+      return (
+        (url.protocol === 'https:' || (url.protocol === 'http:' && local)) &&
+        !url.username &&
+        !url.password &&
+        !url.search &&
+        !url.hash
+      );
+    } catch {
+      return false;
+    }
+  }, 'Use HTTPS, or HTTP on localhost, without credentials, a query, or a fragment')
+  .transform((value) => new URL(value).toString().replace(/\/+$/, ''));
+export const ModelListInput = z
+  .object({
+    provider: z.enum(['anthropic', 'openai-compatible']),
+    baseUrl: LlmBaseUrl.optional(),
+    apiKey: z.string().trim().min(1).max(4096).optional(),
+  })
+  .refine(
+    (v) => v.provider !== 'openai-compatible' || !!v.baseUrl,
+    'Set the API base URL for an OpenAI-compatible provider',
+  );
+export const ModelListOutput = z.object({ models: z.array(z.string()), truncated: z.boolean() });
+export type ModelList = z.infer<typeof ModelListOutput>;
 export const LlmInput = z
   .object({
-    provider: z.enum(['test', 'anthropic']),
+    provider: LlmProvider,
     model: z.string().trim().min(1).max(160),
+    baseUrl: LlmBaseUrl.optional(),
+    tokenLimitParameter: z.enum(['max_tokens', 'max_completion_tokens']).optional(),
     apiKey: z.string().trim().min(1).max(4096).optional(),
     removeKey: z.boolean().default(false),
   })
-  .refine((v) => !(v.apiKey && v.removeKey));
+  .refine((v) => !(v.apiKey && v.removeKey))
+  .refine(
+    (v) => v.provider !== 'openai-compatible' || !!v.baseUrl,
+    'Set the API base URL for an OpenAI-compatible provider',
+  );
 export type LlmSettings = {
-  provider: 'test' | 'anthropic';
+  provider: z.infer<typeof LlmProvider>;
   model: string;
+  baseUrl: string | null;
+  tokenLimitParameter: 'max_tokens' | 'max_completion_tokens';
   hasKey: boolean;
   revision: number;
   updated_at: string;
@@ -195,8 +237,10 @@ export const MemberOutput = ParticipantOutput.extend({
   enabled: z.boolean(),
 });
 export const LlmOutput = z.object({
-  provider: z.enum(['test', 'anthropic']),
+  provider: LlmProvider,
   model: z.string(),
+  baseUrl: z.string().nullable(),
+  tokenLimitParameter: z.enum(['max_tokens', 'max_completion_tokens']),
   hasKey: z.boolean(),
   revision: z.number().int(),
   updated_at: z.string(),

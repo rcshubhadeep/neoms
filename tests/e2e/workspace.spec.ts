@@ -17,6 +17,18 @@ test('workspace essentials: channels, DMs, admin roles, BYOK, invites, usage and
     password = 'test-password-482!';
   const contexts = await Promise.all([browser.newContext(), browser.newContext()]);
   const [alice, bob] = await Promise.all(contexts.map((c) => c.newPage()));
+  let modelListingAvailable = true;
+  await alice.route('**/v1/workspaces/*/llm/models', (route) =>
+    route.fulfill({
+      status: modelListingAvailable ? 200 : 502,
+      contentType: 'application/json',
+      body: JSON.stringify(
+        modelListingAvailable
+          ? { models: ['suggested-chat-model'], truncated: false }
+          : { error: 'Model listing unavailable' },
+      ),
+    }),
+  );
   try {
     for (const [index, name] of ['Alice', 'Bob'].entries()) {
       const email = `essentials-${name}-${suffix}@example.test`;
@@ -93,7 +105,9 @@ test('workspace essentials: channels, DMs, admin roles, BYOK, invites, usage and
     await alice.getByRole('button', { name: 'Message Bob' }).click();
     await expect(alice.getByText('A private note for Alice', { exact: true })).toBeVisible();
     await expect(unreadDm).not.toHaveAttribute('data-unread', 'true');
-    await expect(alice.getByRole('button', { name: 'Catch me up' })).toHaveCount(0);
+    await alice.getByRole('button', { name: 'Catch me up', exact: true }).click();
+    await expect(alice.getByText(/Test provider — not an AI summary/)).toBeVisible();
+    await expect(bob.getByText(/Test provider — not an AI summary/)).toBeVisible();
     await alice.screenshot({ path: '/tmp/neoms-workspace-dm.png' });
     await alice.getByRole('button', { name: 'Workspace settings', exact: true }).click();
     await alice.getByLabel('Role for Bob').selectOption('admin');
@@ -123,6 +137,25 @@ test('workspace essentials: channels, DMs, admin roles, BYOK, invites, usage and
     await alice.emulateMedia({ colorScheme: 'light' });
     await alice.getByRole('button', { name: 'Remove key', exact: true }).click();
     await expect(alice.getByText('No key stored', { exact: true })).toBeVisible();
+    await alice.getByLabel('Provider', { exact: true }).selectOption('openai-compatible');
+    await alice.getByLabel('API base URL').fill('https://models.example.test/v1');
+    await alice.getByLabel('API key', { exact: true }).fill('controlled-compatible-key');
+    await alice.getByRole('button', { name: 'Load available models' }).click();
+    await expect(alice.locator('datalist option')).toHaveAttribute('value', 'suggested-chat-model');
+    await alice.getByLabel('Model ID').fill('manual-unlisted-model');
+    await alice.getByRole('button', { name: 'Save model settings' }).click();
+    await expect(alice.getByText('Key configured', { exact: true })).toBeVisible();
+    await expect(alice.getByLabel('Model ID')).toHaveValue('manual-unlisted-model');
+    await expect(alice.getByLabel('API base URL')).toHaveValue('https://models.example.test/v1');
+    modelListingAvailable = false;
+    await alice.getByRole('button', { name: 'Load available models' }).click();
+    await expect(alice.getByText(/You can still enter a model ID and save/)).toBeVisible();
+    await alice.getByLabel('Model ID').fill('another-manual-model');
+    await alice.getByRole('button', { name: 'Save model settings' }).click();
+    await expect(
+      alice.getByRole('status').filter({ hasText: 'Workspace model settings saved.' }),
+    ).toBeVisible();
+    await alice.screenshot({ path: test.info().outputPath('compatible-model-settings.png') });
     await alice.getByLabel('Provider', { exact: true }).selectOption('test');
     await alice.getByRole('button', { name: 'Save model settings' }).click();
     await expect(

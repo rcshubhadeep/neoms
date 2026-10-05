@@ -793,6 +793,13 @@
   color: var(--success-text);
   margin-bottom: var(--space-4);
 }
+.settings-compatibility {
+  margin-top: var(--space-4);
+}
+.settings-compatibility summary {
+  cursor: pointer;
+  margin-bottom: var(--space-3);
+}
 .settings-table-wrap {
   width: 100%;
   overflow-x: auto;

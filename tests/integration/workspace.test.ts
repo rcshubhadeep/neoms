@@ -99,9 +99,30 @@ describe('channels and private direct messages', () => {
     await expect(domain.changeMembership(bob.id, dm.id, alice.id, true)).rejects.toMatchObject({
       status: 403,
     });
-    await expect(domain.startSummary(bob.id, dm.id, randomUUID())).rejects.toMatchObject({
-      status: 400,
+    await expect(domain.startSummary(alice.id, dm.id, randomUUID())).rejects.toMatchObject({
+      status: 403,
     });
+    const requestId = randomUUID();
+    const run = await domain.startSummary(bob.id, dm.id, requestId);
+    expect((await domain.startSummary(bob.id, dm.id, requestId)).id).toBe(run.id);
+    const context = (await domain.prepareRun(run.id))!;
+    const summary = await summarize(context.messages, context.configuration);
+    await domain.completeRun(run.id, context.messages, summary);
+    const snapshot = await domain.snapshot(eve.id, dm.id);
+    expect(
+      snapshot.messages.find((m: { agent_run_id: string | null }) => m.agent_run_id === run.id),
+    ).toMatchObject({ body: summary.body, citations: summary.citations });
+    expect(
+      (
+        await pool.query('select count(*) from conversation_members where conversation_id=$1', [
+          dm.id,
+        ])
+      ).rows[0].count,
+    ).toBe('2');
+    await expect(domain.snapshot(context.run.agent_id, dm.id)).rejects.toMatchObject({
+      status: 403,
+    });
+    await expect(domain.changes(alice.id, dm.id, '0')).rejects.toMatchObject({ status: 403 });
     const directory = await (await request(alice, `/workspaces/${workspace}/conversations`)).json();
     expect(directory.map((c: { id: string }) => c.id)).not.toContain(dm.id);
     await expect(admin.directMessage(alice.id, workspace, alice.id)).rejects.toMatchObject({
@@ -218,6 +239,204 @@ describe('workspace administration', () => {
     await disable;
     await expect(domain.changes(bob.id, channel, '0')).rejects.toMatchObject({ status: 403 });
     await admin.updateMember(alice.id, workspace, bob.id, { enabled: true });
+  });
+});
+it('cancels a DM summary when its requesting participant is disabled before publication', async () => {
+  const dm = await admin.directMessage(bob.id, workspace, eve.id);
+  const run = await domain.startSummary(eve.id, dm.id, randomUUID());
+  const context = (await domain.prepareRun(run.id))!;
+  try {
+    await admin.updateMember(alice.id, workspace, eve.id, { enabled: false });
+    await domain.completeRun(run.id, context.messages, {
+      body: 'Must not be published',
+      citations: [context.messages[0].id],
+    });
+    expect(
+      (await pool.query('select status from agent_runs where id=$1', [run.id])).rows[0].status,
+    ).toBe('cancelled');
+    expect(
+      (await pool.query('select count(*) from messages where agent_run_id=$1', [run.id])).rows[0]
+        .count,
+    ).toBe('0');
+    await expect(domain.startSummary(eve.id, dm.id, randomUUID())).rejects.toMatchObject({
+      status: 403,
+    });
+  } finally {
+    await admin.updateMember(alice.id, workspace, eve.id, { enabled: true });
+  }
+});
+describe('OpenAI-compatible connections and discovery', () => {
+  let isolated: string;
+  const input = {
+    provider: 'openai-compatible' as const,
+    baseUrl: 'https://models.example.test/v1',
+    model: 'manual-model',
+    apiKey: 'compatible-controlled-key',
+    removeKey: false,
+  };
+  it('persists manual model IDs and encrypts endpoint-bound keys through the API', async () => {
+    isolated = (await domain.createWorkspace(alice.id, 'Compatible models')).id;
+    workspaces.push(isolated);
+    const response = await request(alice, `/workspaces/${isolated}/llm`, 'PATCH', input);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      provider: input.provider,
+      baseUrl: input.baseUrl,
+      model: input.model,
+      hasKey: true,
+      tokenLimitParameter: 'max_completion_tokens',
+    });
+    const row = (await pool.query('select * from workspace_llm where workspace_id=$1', [isolated]))
+      .rows[0];
+    expect(openKey(row.key_ciphertext)).toBe(input.apiKey);
+    const saved = await admin.setLlmSettings(alice.id, isolated, {
+      ...input,
+      baseUrl: `${input.baseUrl}/`,
+      apiKey: undefined,
+      model: 'unlisted-model',
+    });
+    expect(saved.hasKey).toBe(true);
+    await expect(
+      admin.setLlmSettings(alice.id, isolated, {
+        ...input,
+        baseUrl: 'https://other.example.test/v1',
+        apiKey: undefined,
+      }),
+    ).rejects.toMatchObject({ status: 400 });
+    await expect(
+      admin.setLlmSettings(alice.id, isolated, {
+        ...input,
+        provider: 'anthropic',
+        apiKey: undefined,
+      }),
+    ).rejects.toMatchObject({ status: 400 });
+    expect((await admin.llmSettings(alice.id, isolated)).baseUrl).toBe(input.baseUrl);
+  });
+  it('discovers sorted model IDs using the saved key, without modifying settings or usage', async () => {
+    const before = await admin.llmSettings(alice.id, isolated);
+    const fetch = vi
+      .fn()
+      .mockResolvedValue(
+        Response.json({ data: [{ id: 'z-model' }, { id: 'a-model' }, { id: 'z-model' }] }),
+      );
+    vi.stubGlobal('fetch', fetch);
+    try {
+      expect(
+        await admin.discoverModels(alice.id, isolated, {
+          provider: input.provider,
+          baseUrl: input.baseUrl,
+        }),
+      ).toEqual({ models: ['a-model', 'z-model'], truncated: false });
+      expect(fetch.mock.calls[0][0].toString()).toBe(`${input.baseUrl}/models`);
+      expect(fetch.mock.calls[0][1]).toMatchObject({
+        redirect: 'error',
+        headers: { Authorization: `Bearer ${input.apiKey}` },
+      });
+      expect(await admin.llmSettings(alice.id, isolated)).toEqual(before);
+      expect((await admin.usage(alice.id, isolated)).models).toEqual([]);
+      await expect(
+        admin.discoverModels(bob.id, isolated, {
+          provider: input.provider,
+          baseUrl: input.baseUrl,
+          apiKey: 'preview-key',
+        }),
+      ).rejects.toMatchObject({ status: 403 });
+      await expect(
+        admin.discoverModels(alice.id, isolated, {
+          provider: input.provider,
+          baseUrl: 'https://other.example.test/v1',
+        }),
+      ).rejects.toMatchObject({ status: 400 });
+      expect(fetch).toHaveBeenCalledOnce();
+      fetch.mockResolvedValueOnce(Response.json({ data: [{ id: 'preview-model' }] }));
+      await admin.discoverModels(alice.id, isolated, {
+        provider: input.provider,
+        baseUrl: 'https://other.example.test/v1',
+        apiKey: 'preview-key',
+      });
+      expect(fetch.mock.calls[1][1].headers.Authorization).toBe('Bearer preview-key');
+      expect(await admin.llmSettings(alice.id, isolated)).toEqual(before);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+  it('bounds listing, sanitizes provider failures, and follows Anthropic pagination', async () => {
+    const fetch = vi
+      .fn()
+      .mockResolvedValue(
+        Response.json({ data: Array.from({ length: 1001 }, (_, i) => ({ id: `model-${i}` })) }),
+      );
+    vi.stubGlobal('fetch', fetch);
+    try {
+      const listed = await admin.discoverModels(alice.id, isolated, {
+        provider: input.provider,
+        baseUrl: input.baseUrl,
+      });
+      expect(listed.models).toHaveLength(1000);
+      expect(listed.truncated).toBe(true);
+      fetch.mockResolvedValueOnce(new Response('secret-provider-error', { status: 401 }));
+      await expect(
+        admin.discoverModels(alice.id, isolated, {
+          provider: input.provider,
+          baseUrl: input.baseUrl,
+        }),
+      ).rejects.toThrow('Model listing failed (401). Enter a model ID manually.');
+      fetch.mockResolvedValueOnce(Response.json({ incorrect: 'secret-provider-error' }));
+      await expect(
+        admin.discoverModels(alice.id, isolated, {
+          provider: input.provider,
+          baseUrl: input.baseUrl,
+        }),
+      ).rejects.toThrow('Model listing is unavailable. Enter a model ID manually.');
+      fetch.mockClear();
+      fetch
+        .mockResolvedValueOnce(
+          Response.json({ data: [{ id: 'claude-a' }], has_more: true, last_id: 'claude-a' }),
+        )
+        .mockResolvedValueOnce(Response.json({ data: [{ id: 'claude-b' }], has_more: false }));
+      expect(
+        await admin.discoverModels(alice.id, isolated, {
+          provider: 'anthropic',
+          apiKey: 'preview-key',
+        }),
+      ).toEqual({ models: ['claude-a', 'claude-b'], truncated: false });
+      expect(fetch.mock.calls[1][0].searchParams.get('after_id')).toBe('claude-a');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+  it('pins endpoint/token settings to runs and invalidates publication after an endpoint change', async () => {
+    const conversation = (
+      await pool.query('select id from conversations where workspace_id=$1', [isolated])
+    ).rows[0].id;
+    await domain.sendMessage(alice.id, conversation, randomUUID(), 'Summarize this decision.');
+    await admin.setLlmSettings(alice.id, isolated, { ...input, tokenLimitParameter: 'max_tokens' });
+    const run = await domain.startSummary(alice.id, conversation, randomUUID());
+    const context = (await domain.prepareRun(run.id))!;
+    expect(context.configuration).toMatchObject({
+      provider: input.provider,
+      baseUrl: input.baseUrl,
+      tokenLimitParameter: 'max_tokens',
+      apiKey: input.apiKey,
+    });
+    await admin.setLlmSettings(alice.id, isolated, {
+      ...input,
+      baseUrl: 'https://other.example.test/v1',
+      apiKey: 'fresh-key',
+    });
+    await domain.completeRun(run.id, context.messages, {
+      body: 'Old endpoint response',
+      citations: [context.messages[0].id],
+    });
+    expect(
+      (await pool.query('select status from agent_runs where id=$1', [run.id])).rows[0].status,
+    ).toBe('cancelled');
+    await admin.setLlmSettings(alice.id, isolated, {
+      ...input,
+      apiKey: undefined,
+      removeKey: true,
+    });
+    expect((await admin.llmSettings(alice.id, isolated)).hasKey).toBe(false);
   });
 });
 describe('workspace BYOK and attributable usage', () => {

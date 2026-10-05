@@ -1,9 +1,16 @@
 import { randomUUID } from 'node:crypto';
 import { pool, transaction, type Tx } from '../../db/src/index.js';
 import { DomainError, workspaceAccess, updateRun } from './index.js';
-import { sealKey } from './secrets.js';
-import { LlmInput, MemberInput, type Conversation } from '../../contracts/src/index.js';
-import type { z } from 'zod';
+import { sealKey, openKey } from './secrets.js';
+import { llmBaseUrl, llmHeaders } from './llm-connection.js';
+import {
+  LlmInput,
+  ModelListInput,
+  MemberInput,
+  type Conversation,
+  type ModelList,
+} from '../../contracts/src/index.js';
+import { z } from 'zod';
 
 export async function directMessage(user: string, workspace: string, target: string) {
   user = user.toLowerCase();
@@ -108,7 +115,7 @@ export async function revokeInvitation(user: string, workspace: string, invitati
 async function llmMetadata(tx: Tx, workspace: string) {
   const row = (
     await tx.query(
-      'select provider,model,(key_ciphertext is not null) as "hasKey",revision,updated_at from workspace_llm where workspace_id=$1',
+      'select provider,model,base_url as "baseUrl",token_limit_parameter as "tokenLimitParameter",(key_ciphertext is not null) as "hasKey",revision,updated_at from workspace_llm where workspace_id=$1',
       [workspace],
     )
   ).rows[0];
@@ -125,12 +132,16 @@ export async function setLlmSettings(
   workspace: string,
   input: z.infer<typeof LlmInput>,
 ) {
+  input = LlmInput.parse(input);
+  const baseUrl = input.provider === 'openai-compatible' ? input.baseUrl! : null;
   return transaction(async (tx) => {
     await workspaceAccess(tx, user, workspace, true);
+    if (input.provider !== 'test') allowedEndpoint(input.provider, baseUrl);
     const existing = (
       await tx.query('select * from workspace_llm where workspace_id=$1 for update', [workspace])
     ).rows[0];
-    let key = existing.key_ciphertext;
+    const changedConnection = existing.provider !== input.provider || existing.base_url !== baseUrl;
+    let key = changedConnection ? null : existing.key_ciphertext;
     if (input.removeKey) key = null;
     if (input.apiKey) {
       try {
@@ -142,14 +153,90 @@ export async function setLlmSettings(
         );
       }
     }
-    if (input.provider === 'anthropic' && !key && !input.removeKey)
-      throw new DomainError(400, 'Set an API key for Anthropic');
+    if (input.provider !== 'test' && !key && !input.removeKey)
+      throw new DomainError(400, 'Set an API key for this provider and endpoint');
     await tx.query(
-      'update workspace_llm set provider=$2,model=$3,key_ciphertext=$4,revision=revision+1,updated_at=now(),updated_by=$5 where workspace_id=$1',
-      [workspace, input.provider, input.model, key, user],
+      'update workspace_llm set provider=$2,model=$3,key_ciphertext=$4,revision=revision+1,updated_at=now(),updated_by=$5,base_url=$6,token_limit_parameter=$7 where workspace_id=$1',
+      [
+        workspace,
+        input.provider,
+        input.model,
+        key,
+        user,
+        baseUrl,
+        input.tokenLimitParameter ?? existing.token_limit_parameter,
+      ],
     );
     return llmMetadata(tx, workspace);
   });
+}
+export async function discoverModels(
+  user: string,
+  workspace: string,
+  input: z.infer<typeof ModelListInput>,
+): Promise<ModelList> {
+  input = ModelListInput.parse(input);
+  const connection = await transaction(async (tx) => {
+    await workspaceAccess(tx, user, workspace, true);
+    const existing = (
+      await tx.query('select * from workspace_llm where workspace_id=$1', [workspace])
+    ).rows[0];
+    const baseUrl = input.provider === 'openai-compatible' ? input.baseUrl! : null;
+    const sameConnection = existing.provider === input.provider && existing.base_url === baseUrl;
+    const apiKey =
+      input.apiKey ||
+      (sameConnection && existing.key_ciphertext ? openKey(existing.key_ciphertext) : undefined);
+    if (!apiKey)
+      throw new DomainError(400, 'Enter an API key for this endpoint to load its models');
+    return { baseUrl: allowedEndpoint(input.provider, baseUrl), apiKey };
+  });
+  const models = new Set<string>();
+  const signal = AbortSignal.timeout(12000);
+  let after: string | undefined;
+  try {
+    for (let page = 0; page < 10; page++) {
+      const url = new URL(`${connection.baseUrl}/models`);
+      if (input.provider === 'anthropic') {
+        url.searchParams.set('limit', '100');
+        if (after) url.searchParams.set('after_id', after);
+      }
+      const response = await fetch(url, {
+        headers: llmHeaders(input.provider, connection.apiKey),
+        signal,
+        redirect: 'error',
+      });
+      if (!response.ok)
+        throw new DomainError(
+          502,
+          `Model listing failed (${response.status}). Enter a model ID manually.`,
+        );
+      const result = z
+        .object({
+          data: z.array(z.object({ id: z.string().trim().min(1).max(160) })).max(10000),
+          has_more: z.boolean().optional(),
+          last_id: z.string().optional(),
+        })
+        .parse(await response.json());
+      for (const row of result.data) {
+        models.add(row.id);
+        if (models.size >= 1000) return { models: [...models].sort(), truncated: true };
+      }
+      if (input.provider !== 'anthropic' || !result.has_more || !result.last_id)
+        return { models: [...models].sort(), truncated: false };
+      after = result.last_id;
+    }
+    return { models: [...models].sort(), truncated: true };
+  } catch (error) {
+    if (error instanceof DomainError) throw error;
+    throw new DomainError(502, 'Model listing is unavailable. Enter a model ID manually.');
+  }
+}
+function allowedEndpoint(provider: string, baseUrl: string | null) {
+  try {
+    return llmBaseUrl(provider, baseUrl);
+  } catch {
+    throw new DomainError(400, 'This model endpoint is not allowed by the installation operator');
+  }
 }
 export async function usage(user: string, workspace: string) {
   return transaction(async (tx) => {

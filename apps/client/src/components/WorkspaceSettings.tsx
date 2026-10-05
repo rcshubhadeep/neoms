@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useState, useRef, type FormEvent } from 'react';
+import { useCallback, useEffect, useState, useRef, useId, type FormEvent } from 'react';
 import { ArrowLeft, Copy, KeyRound, Mail, Settings, Users, ChartNoAxesColumn } from 'lucide-react';
 import type {
   Invitation,
   LlmSettings,
+  ModelList,
   Member,
   UsageReport,
   Workspace,
@@ -28,7 +29,15 @@ export function WorkspaceSettings({
   const [invites, setInvites] = useState<Invitation[]>([]);
   const [config, setConfig] = useState<LlmSettings>();
   const [usage, setUsage] = useState<UsageReport>();
-  const [provider, setProvider] = useState<'test' | 'anthropic'>('test');
+  const [provider, setProvider] = useState<LlmSettings['provider']>('test');
+  const [baseUrl, setBaseUrl] = useState('https://api.openai.com/v1');
+  const [tokenLimitParameter, setTokenLimitParameter] =
+    useState<LlmSettings['tokenLimitParameter']>('max_completion_tokens');
+  const [models, setModels] = useState<string[]>([]);
+  const [modelNotice, setModelNotice] = useState('');
+  const [loadingModels, setLoadingModels] = useState(false);
+  const modelGeneration = useRef(0);
+  const modelListId = useId();
   const [model, setModel] = useState('deterministic');
   const [key, setKey] = useState('');
   const [token, setToken] = useState('');
@@ -54,6 +63,8 @@ export function WorkspaceSettings({
       setConfig(row);
       setProvider(row.provider);
       setModel(row.model);
+      setBaseUrl(row.baseUrl || 'https://api.openai.com/v1');
+      setTokenLimitParameter(row.tokenLimitParameter);
     }
     setLoadedTab(tab);
   }, [root, tab]);
@@ -64,6 +75,63 @@ export function WorkspaceSettings({
     setToken('');
     load().catch((e) => setError(explain(e)));
   }, [load]);
+  const loadModels = useCallback(
+    async (
+      selectedProvider: 'anthropic' | 'openai-compatible',
+      selectedBaseUrl: string | null,
+      suppliedKey?: string,
+    ) => {
+      const generation = ++modelGeneration.current;
+      setLoadingModels(true);
+      setModelNotice('');
+      try {
+        const result = await api<ModelList>(`${root}/llm/models`, {
+          method: 'POST',
+          body: JSON.stringify({
+            provider: selectedProvider,
+            ...(selectedProvider === 'openai-compatible' ? { baseUrl: selectedBaseUrl } : {}),
+            ...(suppliedKey ? { apiKey: suppliedKey } : {}),
+          }),
+        });
+        if (generation !== modelGeneration.current) return;
+        setModels(result.models);
+        setModelNotice(
+          result.models.length
+            ? `${result.models.length} models available${result.truncated ? ' (partial list)' : ''}. Choose a suggestion or enter any model ID.`
+            : 'No models were listed. Enter a model ID manually.',
+        );
+      } catch (e) {
+        if (generation !== modelGeneration.current) return;
+        setModels([]);
+        setModelNotice(`${explain(e)} You can still enter a model ID and save.`);
+      } finally {
+        if (generation === modelGeneration.current) setLoadingModels(false);
+      }
+    },
+    [root],
+  );
+  useEffect(() => {
+    if (tab === 'llm' && loadedTab === tab && config?.hasKey && config.provider !== 'test')
+      void loadModels(config.provider, config.baseUrl);
+    else {
+      setLoadingModels(false);
+      setModels([]);
+      setModelNotice('');
+    }
+    return () => {
+      modelGeneration.current++;
+    };
+  }, [tab, loadedTab, config, loadModels]);
+  function resetModels() {
+    modelGeneration.current++;
+    setModels([]);
+    setModelNotice('');
+    setLoadingModels(false);
+  }
+  const sameConnection =
+    config?.provider === provider &&
+    (provider !== 'openai-compatible' || config.baseUrl === baseUrl.trim().replace(/\/+$/, ''));
+  const hasStoredKey = !!(sameConnection && config?.hasKey);
   async function action(fn: () => Promise<unknown>, message: string) {
     setBusy(true);
     setError('');
@@ -84,7 +152,13 @@ export function WorkspaceSettings({
     await action(async () => {
       await api(`${root}/llm`, {
         method: 'PATCH',
-        body: JSON.stringify({ provider, model, ...(key ? { apiKey: key } : {}) }),
+        body: JSON.stringify({
+          provider,
+          model,
+          tokenLimitParameter,
+          ...(provider === 'openai-compatible' ? { baseUrl } : {}),
+          ...(key ? { apiKey: key } : {}),
+        }),
       });
       setKey('');
     }, 'Workspace model settings saved.');
@@ -331,10 +405,17 @@ export function WorkspaceSettings({
                 onChange={(e) => {
                   const value = e.target.value as typeof provider;
                   setProvider(value);
+                  resetModels();
+                  setKey('');
+                  setBaseUrl(
+                    config?.provider === value
+                      ? config.baseUrl || 'https://api.openai.com/v1'
+                      : 'https://api.openai.com/v1',
+                  );
                   setModel(
                     value === 'test'
                       ? 'deterministic'
-                      : config?.provider === 'anthropic'
+                      : config?.provider === value
                         ? config.model
                         : '',
                   );
@@ -342,30 +423,106 @@ export function WorkspaceSettings({
               >
                 <option value="test">Test provider — no AI or charges</option>
                 <option value="anthropic">Anthropic</option>
+                <option value="openai-compatible">OpenAI-compatible API</option>
               </select>
             </label>
+            {provider === 'openai-compatible' && (
+              <Field
+                label="API base URL"
+                type="url"
+                required
+                value={baseUrl}
+                maxLength={2048}
+                onChange={(e) => {
+                  setBaseUrl(e.target.value);
+                  resetModels();
+                }}
+                placeholder="https://api.openai.com/v1"
+                hint="Use the provider's API root, including /v1 when required. Calls are made by the server. HTTP is supported on localhost."
+              />
+            )}
             <Field
               label="Model ID"
               value={model}
               required
               maxLength={160}
+              list={modelListId}
               onChange={(e) => setModel(e.target.value)}
               hint={
                 provider === 'test'
                   ? 'Deterministic development output.'
-                  : 'Enter a model ID available to your Anthropic account.'
+                  : 'Choose an available model or type its exact ID. Model listing may include models that do not support chat.'
               }
             />
-            {provider === 'anthropic' && (
+            <datalist id={modelListId}>
+              {models.map((id) => (
+                <option key={id} value={id} />
+              ))}
+            </datalist>
+            {provider !== 'test' && (
+              <>
+                <Button
+                  type="button"
+                  size="sm"
+                  disabled={
+                    busy ||
+                    loadingModels ||
+                    (!key.trim() && !hasStoredKey) ||
+                    (provider === 'openai-compatible' && !baseUrl.trim())
+                  }
+                  onClick={() => void loadModels(provider, baseUrl, key.trim() || undefined)}
+                >
+                  {loadingModels ? 'Loading models…' : 'Load available models'}
+                </Button>
+                {modelNotice && (
+                  <p className="t-meta" role="status">
+                    {modelNotice}
+                  </p>
+                )}
+              </>
+            )}
+            {provider !== 'test' && (
               <Field
-                label={config?.hasKey ? 'Replace API key (optional)' : 'API key'}
+                label={hasStoredKey ? 'Replace API key (optional)' : 'API key'}
                 type="password"
                 autoComplete="new-password"
                 value={key}
                 maxLength={4096}
-                onChange={(e) => setKey(e.target.value)}
-                hint="Leave blank to keep the stored key."
+                onChange={(e) => {
+                  setKey(e.target.value);
+                  resetModels();
+                }}
+                hint={
+                  hasStoredKey
+                    ? 'Leave blank to keep the stored key for this endpoint.'
+                    : 'Enter a key for this provider and endpoint. Changing endpoints requires a new key.'
+                }
               />
+            )}
+            {provider === 'openai-compatible' && (
+              <details className="settings-compatibility">
+                <summary>Compatibility settings</summary>
+                <label className="field">
+                  <span className="field__label">Output token limit parameter</span>
+                  <select
+                    className="input"
+                    aria-label="Output token limit parameter"
+                    value={tokenLimitParameter}
+                    onChange={(e) =>
+                      setTokenLimitParameter(e.target.value as LlmSettings['tokenLimitParameter'])
+                    }
+                  >
+                    <option value="max_completion_tokens">
+                      max_completion_tokens — modern OpenAI
+                    </option>
+                    <option value="max_tokens">max_tokens — other compatible providers</option>
+                  </select>
+                </label>
+                <p className="t-meta">
+                  Select the parameter your endpoint accepts. Replies are limited to 2,000 output
+                  tokens.
+                </p>
+              </details>
             )}
             <div className="settings-actions">
               <Button variant="primary" disabled={busy}>
@@ -383,6 +540,8 @@ export function WorkspaceSettings({
                         body: JSON.stringify({
                           provider: config.provider,
                           model: config.model,
+                          ...(config.baseUrl ? { baseUrl: config.baseUrl } : {}),
+                          tokenLimitParameter: config.tokenLimitParameter,
                           removeKey: true,
                         }),
                       });

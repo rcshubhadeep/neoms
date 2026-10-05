@@ -14,6 +14,8 @@ import {
   DmInput,
   LlmInput,
   LlmOutput,
+  ModelListInput,
+  ModelListOutput,
   InvitationOutput,
   UsageOutput,
   WorkspaceOutput,
@@ -216,6 +218,16 @@ app.patch('/v1/workspaces/:workspace/llm', async (c) => {
 app.get('/v1/workspaces/:workspace/usage', async (c) =>
   c.json(await administration.usage(c.get('participant').id, id(c.req.param('workspace')))),
 );
+app.post('/v1/workspaces/:workspace/llm/models', async (c) => {
+  const input = ModelListInput.parse(await c.req.json());
+  return c.json(
+    await administration.discoverModels(
+      c.get('participant').id,
+      id(c.req.param('workspace')),
+      input,
+    ),
+  );
+});
 app.get('/v1/conversations/:conversation/members', async (c) =>
   c.json(
     await transaction(async (tx) => {
@@ -386,6 +398,7 @@ const routes: [string, string, z.ZodType?][] = [
   ['delete', '/workspaces/{workspace}/invitations/{invitation}'],
   ['get', '/workspaces/{workspace}/llm'],
   ['patch', '/workspaces/{workspace}/llm', LlmInput],
+  ['post', '/workspaces/{workspace}/llm/models', ModelListInput],
   ['get', '/workspaces/{workspace}/usage'],
   ['get', '/me'],
   ['get', '/workspaces'],
@@ -431,47 +444,49 @@ app.get('/openapi.json', (c) => {
       });
     if (method === 'get' && path.endsWith('/messages'))
       parameters.push({ name: 'before', in: 'query', schema: { type: 'string', format: 'uuid' } });
-    const output = path.endsWith('/llm')
-      ? LlmOutput
-      : path.endsWith('/usage')
-        ? UsageOutput
-        : path.endsWith('/dms')
-          ? ConversationOutput
-          : method === 'patch' && path.endsWith('/members/{participant}')
-            ? z.object({ ok: z.boolean() })
-            : method === 'delete' && !path.endsWith('/messages/{message}')
+    const output = path.endsWith('/llm/models')
+      ? ModelListOutput
+      : path.endsWith('/llm')
+        ? LlmOutput
+        : path.endsWith('/usage')
+          ? UsageOutput
+          : path.endsWith('/dms')
+            ? ConversationOutput
+            : method === 'patch' && path.endsWith('/members/{participant}')
               ? z.object({ ok: z.boolean() })
-              : path.endsWith('/invitations') && method === 'get'
-                ? z.array(InvitationOutput)
-                : path === '/me'
-                  ? ParticipantOutput
-                  : path === '/workspaces'
-                    ? method === 'get'
-                      ? z.array(WorkspaceOutput)
-                      : WorkspaceOutput
-                    : path.endsWith('/invitations')
-                      ? z.object({ token: z.string(), expiresInDays: z.number() })
-                      : path === '/invitations/accept'
-                        ? z.object({ workspaceId: z.uuid() })
-                        : path.endsWith('/members')
-                          ? path.startsWith('/workspaces/')
-                            ? z.array(MemberOutput)
-                            : z.array(ParticipantOutput)
-                          : path.endsWith('/conversations')
-                            ? method === 'get'
-                              ? z.array(ConversationOutput)
-                              : ConversationOutput
-                            : path.endsWith('/messages')
+              : method === 'delete' && !path.endsWith('/messages/{message}')
+                ? z.object({ ok: z.boolean() })
+                : path.endsWith('/invitations') && method === 'get'
+                  ? z.array(InvitationOutput)
+                  : path === '/me'
+                    ? ParticipantOutput
+                    : path === '/workspaces'
+                      ? method === 'get'
+                        ? z.array(WorkspaceOutput)
+                        : WorkspaceOutput
+                      : path.endsWith('/invitations')
+                        ? z.object({ token: z.string(), expiresInDays: z.number() })
+                        : path === '/invitations/accept'
+                          ? z.object({ workspaceId: z.uuid() })
+                          : path.endsWith('/members')
+                            ? path.startsWith('/workspaces/')
+                              ? z.array(MemberOutput)
+                              : z.array(ParticipantOutput)
+                            : path.endsWith('/conversations')
                               ? method === 'get'
-                                ? SnapshotOutput
-                                : MessageOutput
-                              : path.endsWith('/messages/{message}')
-                                ? MessageOutput
-                                : path.endsWith('/changes')
-                                  ? ChangesOutput
-                                  : path.endsWith('/runs')
-                                    ? RunOutput
-                                    : z.object({ ok: z.boolean() });
+                                ? z.array(ConversationOutput)
+                                : ConversationOutput
+                              : path.endsWith('/messages')
+                                ? method === 'get'
+                                  ? SnapshotOutput
+                                  : MessageOutput
+                                : path.endsWith('/messages/{message}')
+                                  ? MessageOutput
+                                  : path.endsWith('/changes')
+                                    ? ChangesOutput
+                                    : path.endsWith('/runs')
+                                      ? RunOutput
+                                      : z.object({ ok: z.boolean() });
     const success =
       method === 'post' && path.endsWith('/runs')
         ? '202'
@@ -490,7 +505,7 @@ app.get('/openapi.json', (c) => {
         ? {
             requestBody: {
               required: true,
-              content: { 'application/json': { schema: z.toJSONSchema(schema) } },
+              content: { 'application/json': { schema: z.toJSONSchema(schema, { io: 'input' }) } },
             },
           }
         : {}),

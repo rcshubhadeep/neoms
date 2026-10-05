@@ -326,17 +326,15 @@ export function Chat({
           <Button variant="ghost" size="sm" icon={<Users />} onClick={onMembers}>
             Members
           </Button>
-          {!direct && (
-            <Button
-              variant="signal"
-              size="sm"
-              icon={activeRun ? <Spinner /> : <Sparkles />}
-              disabled={summarizing || !!activeRun}
-              onClick={summarize}
-            >
-              {activeRun ? 'Summarizing…' : 'Catch me up'}
-            </Button>
-          )}
+          <Button
+            variant="signal"
+            size="sm"
+            icon={activeRun ? <Spinner /> : <Sparkles />}
+            disabled={summarizing || !!activeRun}
+            onClick={summarize}
+          >
+            {activeRun ? 'Summarizing…' : 'Catch me up'}
+          </Button>
         </div>
       </header>
       <div className="conversation">

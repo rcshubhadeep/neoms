@@ -28,6 +28,20 @@ Small design fixes belong in the first slice:
 
 ## Scope and implementation order
 
+### 0. Direct workspace LLM access
+
+Start with encrypted workspace BYOK before adding agent identities. Anthropic and
+generic OpenAI-compatible Chat Completions are supported alongside test mode. A
+compatible connection supplies an API base URL, key, and editable model ID.
+Suggestions come from model listing when available; missing discovery does not
+block manual entry. See [workspace administration](WORKSPACE_ADMINISTRATION.md).
+This remains a bounded summary operation, not a general chat agent or tool executor.
+
+The foundation review above describes the pre-workspace-settings baseline.
+Workspace configuration, encrypted BYOK, revision checks, and attempt usage now
+exist. Ownership, explicit selection, durable steps, and cooperative cancellation
+remain future slices below.
+
 ### 1. Agent identity, ownership, and explicit access
 
 - Add versioned agent definitions associated with an agent participant: workspace, creator/owner, name, description, bounded instructions, supported operation, model configuration reference, and enabled/disabled state.
@@ -97,6 +111,11 @@ Document the future externally hosted agent protocol around the same identity, c
 Defer connector implementations, repository execution, autonomous triggers, agent delegation, write tools, approvals, deployments, monitoring, semantic search, and phone work. Approval UI becomes functional when the first controlled write tool is implemented; a visual Approve button alone is not authorization.
 
 ## Following milestones
+
+Future audio rooms and optional voice agents have their own
+[real-time calls roadmap](REALTIME_CALLS_ROADMAP.md), covering deployment, TURN/SFU,
+access control, platform permissions, and privacy gates. Calling is deferred and
+does not change the order of the agent foundations.
 
 1. **Connected context:** one read-only GitHub connector for selected repositories, initially issues/PR metadata and content. Prove initial sync, duplicate/out-of-order webhook handling, reconciliation, scoped access, freshness, deletion, and citations. Add external-agent enrollment with a small reference client against the established API. Bring Linear and Better Stack through the proven connector contract incrementally.
 2. **Collaborative coding:** a bounded issue-to-PR workflow in an isolated checkout/environment, with human review, test artifacts, scoped tool execution, and durable approvals for controlled writes. Persist tool attempts and reconcile uncertain outcomes; retries cannot promise exactly-once external effects.
