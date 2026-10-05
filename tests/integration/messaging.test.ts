@@ -219,6 +219,43 @@ describe('durable messages and replay', () => {
     await domain.changeMembership(alice, conversation, bob, true);
   });
 });
+describe('unread conversations', () => {
+  it('persists bounded, monotonic read positions and ignores own messages, edits, and deletions', async () => {
+    const channel = await domain.createChannel(alice, workspace, `unread-${randomUUID()}`, false);
+    const list = async () => {
+      const response = await app.request(`/v1/workspaces/${workspace}/conversations`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      expect(response.status).toBe(200);
+      const rows = await response.json();
+      return rows.find((row: { id: string }) => row.id === channel.id);
+    };
+    await domain.sendMessage(alice, channel.id, randomUUID(), 'My own message');
+    expect((await list()).unread).toBe(false);
+    const incoming = await domain.sendMessage(bob, channel.id, randomUUID(), 'An incoming message');
+    expect((await list()).unread).toBe(true);
+    const seen = (await domain.snapshot(alice, channel.id)).cursor;
+    const read = await app.request(`/v1/conversations/${channel.id}/read`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sequence: seen }),
+    });
+    expect(read.status).toBe(200);
+    await domain.markRead(alice, channel.id, '0');
+    expect((await list()).unread).toBe(false);
+    await domain.mutateMessage(bob, channel.id, incoming.id, 'An edited message', 1);
+    expect((await list()).unread).toBe(false);
+    await expect(domain.markRead(alice, channel.id, '999999999')).rejects.toMatchObject({
+      status: 400,
+    });
+    await expect(domain.markRead(eve, channel.id, '0')).rejects.toMatchObject({ status: 403 });
+    const later = await domain.sendMessage(bob, channel.id, randomUUID(), 'A later message');
+    await domain.markRead(alice, channel.id, seen);
+    expect((await list()).unread).toBe(true);
+    await domain.mutateMessage(bob, channel.id, later.id, null, 1);
+    expect((await list()).unread).toBe(false);
+  });
+});
 describe('agent jobs and provenance', () => {
   it('enqueues idempotently and publishes one reply across concurrent completion', async () => {
     const requestId = randomUUID();

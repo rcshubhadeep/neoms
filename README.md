@@ -32,6 +32,152 @@ npm run dev:mac
 
 The Mac command reuses the running Vite server. Run `npm run dev` first.
 
+## Windows setup
+
+Windows supports the browser client and the Tauri desktop app. All commands below
+run in **PowerShell** from the repository directory. Mac commands remain above.
+
+### Prerequisites
+
+- **Node 24.7.0 and npm:** the version is pinned in `.nvmrc` and `package.json`.
+  The setup on this machine uses `.local/node-v24.7.0-win-x64`, leaving the existing
+  system Node installation intact. This ignored folder is specific to this checkout;
+  a fresh checkout needs Node installed separately. Download the pinned version from
+  [Node.js](https://nodejs.org/dist/v24.7.0/).
+- **Docker Desktop:** start it and wait for its Linux engine to be ready. Use its
+  WSL 2 backend. See [Docker's Windows setup](https://docs.docker.com/desktop/setup/install/windows-install/).
+- **Desktop builds only:** Rust/Cargo with the `stable-x86_64-pc-windows-msvc`
+  toolchain, Visual Studio Build Tools with **Desktop development with C++**
+  (including the Windows SDK), and Microsoft Edge WebView2. See
+  [Tauri's Windows prerequisites](https://v2.tauri.app/start/prerequisites/).
+
+Windows Package Manager can install the Docker and desktop prerequisites:
+
+```powershell
+winget install --id Docker.DockerDesktop --exact --source winget
+winget install --id Microsoft.VisualStudio.2022.BuildTools --exact --source winget --override "--wait --quiet --norestart --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+winget install --id Rustlang.Rustup --exact --source winget
+winget install --id Microsoft.EdgeWebView2Runtime --exact --source winget
+```
+
+Approve administrator prompts when Windows requests them. Finish one installer
+before starting the next. If an installer requests a restart, save your work and
+restart when convenient; the browser workflow can continue while it is running.
+Open a new terminal after installation so it picks up PATH changes.
+
+### First run
+
+For this checkout, set PATH **before** running npm commands. PATH changes apply
+only to the current terminal, so repeat them in each new development terminal:
+
+```powershell
+cd C:\Users\shubh\neoms
+$env:Path = "$PWD\.local\node-v24.7.0-win-x64;$env:LOCALAPPDATA\Programs\DockerDesktop\resources\bin;$env:USERPROFILE\.cargo\bin;$env:Path"
+node --version
+npm --version
+docker info
+```
+
+If Docker was installed system-wide, its CLI should already be on PATH; the
+user-install path above covers this machine. With Docker Desktop running:
+
+```powershell
+npm ci
+npm run db:start
+npm run setup:env
+npm run db:migrate
+npm run dev
+```
+
+`setup:env` writes the ignored `.env` without printing secrets. The API, worker,
+and browser client run together in the terminal. Keep it open. Open
+[Neoms in the browser](http://127.0.0.1:1420) and create an account, or use
+`npm run demo` in another configured terminal for the demo accounts below.
+
+### Everyday development and restarting
+
+After initial setup, start Docker Desktop and run:
+
+```powershell
+cd C:\Users\shubh\neoms
+.\start-neoms.cmd
+```
+
+The launcher selects the local Node installation when present, starts Supabase,
+refreshes local settings, applies pending migrations, and runs the API, worker,
+and browser client. Keep its terminal open. Run only one copy of the development
+services at a time. Use **Ctrl+C** in that terminal to stop them. Supabase keeps
+running; `npm run db:stop` stops it without resetting the database.
+
+The browser automatically updates when you save UI changes. The API and worker
+restart when their source changes. **You do not need to rebuild or reinstall the
+desktop app for each iteration.** After a reboot, start Docker Desktop and the
+launcher again; Neoms does not automatically start its backend on Windows login.
+
+To develop in a desktop window, leave the launcher running and open a **second**
+PowerShell terminal. Set PATH there too, then run:
+
+```powershell
+cd C:\Users\shubh\neoms
+$env:Path = "$PWD\.local\node-v24.7.0-win-x64;$env:LOCALAPPDATA\Programs\DockerDesktop\resources\bin;$env:USERPROFILE\.cargo\bin;$env:Path"
+npm run dev:windows
+```
+
+This window uses the live Vite client. UI changes appear automatically; Rust
+changes trigger a native rebuild. The desktop development command reuses the
+already-running services. Closing that window leaves the backend running.
+
+### Building and installing the desktop app
+
+In a terminal with Node/npm and Cargo on PATH:
+
+```powershell
+npm run build:windows
+```
+
+The first native build downloads Rust dependencies and installer tools and can
+take several minutes. Output:
+`apps/client/src-tauri/target/release/bundle/nsis/Neoms_0.1.0_x64-setup.exe`.
+Run the generated installer to install or update Neoms for your Windows account.
+The installation on this machine creates a **Neoms** Start menu shortcut and
+installs the executable at `%LOCALAPPDATA%\Neoms\neoms.exe`.
+
+The Start menu app contains the UI built at packaging time. To update that
+version, build again and rerun the new installer. Use it to check packaged
+behavior; use the browser or `dev:windows` for daily development. These local
+builds are unsigned and intended for local testing.
+
+The installed app still needs Supabase, the API, and the worker running. It uses
+the API and Supabase URLs embedded from `.env` at build time. Installing the
+desktop app does not install or start the backend as Windows services.
+
+### Verification and troubleshooting
+
+With local Supabase and the configured `.env`, use the same checks as on Mac:
+
+```powershell
+npm run check
+npm test
+npx playwright install chromium
+npm run test:e2e
+```
+
+- **npm is missing or PowerShell blocks `npm.ps1`:** set PATH as above and use
+  `npm.cmd` (and `npx.cmd`) instead of changing the machine's execution policy.
+- **Docker connection fails:** start Docker Desktop, wait for its engine, and
+  confirm `docker info` works. Complete any pending WSL setup or restart request.
+- **Cargo or a linker is missing:** reopen the terminal, check `rustc --version`
+  and `cargo --version`, and confirm the C++ workload and Windows SDK are installed.
+- **Port 1420 or 3001 is already in use:** check whether another Neoms development
+  terminal is already running; reuse it or stop it before starting another.
+- **The Start menu app does not show edits:** use `npm run dev:windows` for live
+  changes, or rebuild and reinstall the packaged version.
+- **A first build or Supabase start hits a download timeout/rate limit:** retry
+  once network access recovers. Successful dependencies and Docker images are
+  cached for later runs. Do not reset the database to resolve a download failure.
+- **New database migrations:** run `npm run db:migrate`; avoid `db:reset`, which
+  erases local data. The launcher applies pending migrations automatically.
+
 ## Try the workflow
 
 Create an account in the app, create a workspace, and use **Invite a teammate** to generate a single-use token. A teammate creates an account and enters the token under **Join**. Both can send messages in `general`. Active members can create channels using **New channel**. Channel creators and authorized workspace admins can manage accessible channel membership through **Members**. Click a person under **People** to start a private one-to-one conversation. DMs contain exactly two people and have no assistant.
@@ -43,6 +189,15 @@ npm run demo
 ```
 
 Sign in as `alice@neoms.test` or `bob@neoms.test`, password `local-demo-password`. This seed command is restricted to the local Supabase URL. Alice owns the `Neoms demo` workspace. These accounts are only for local development.
+
+## Unread conversations
+
+Channel and direct-message names become **bold** with a small dot when someone
+else sends an unread message. The indicators update with the sidebar's five-second
+refresh and survive reloads and sign-ins because read positions are saved per
+person on the server. Viewing a conversation in the focused, visible app clears
+its indicator after its messages load. Your own messages and edits do not create
+new unread indicators; deleted messages do not keep a conversation unread.
 
 ## Workspace administration and BYOK
 

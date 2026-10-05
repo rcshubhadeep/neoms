@@ -190,6 +190,19 @@
   background: var(--surface-hover);
   color: var(--text-primary);
 }
+.nav-item--unread,
+.nav-item--unread[aria-current='page'] {
+  font-weight: 700;
+  color: var(--text-primary);
+}
+.nav-item .nav-item__unread {
+  flex: 0 0 6px;
+  width: 6px;
+  height: 6px;
+  margin-left: auto;
+  border-radius: 50%;
+  background: currentColor;
+}
 .nav-item[aria-current='page'] {
   background: var(--surface-selected);
   color: var(--text-strong);

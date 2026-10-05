@@ -14,6 +14,7 @@
     "dev": "concurrently -k -n api,worker,client \"npm run dev -w @neoms/server\" \"npm run dev -w @neoms/worker\" \"npm run dev -w @neoms/client\"",
     "dev:worker": "npm run dev -w @neoms/worker",
     "dev:mac": "npm run tauri -w @neoms/client -- dev --config '{\"build\":{\"beforeDevCommand\":\"\"}}'",
+    "dev:windows": "npm run tauri -w @neoms/client -- dev --config src-tauri/tauri.dev.conf.json",
     "typecheck": "tsc --noEmit && npm run typecheck -w @neoms/client",
     "build": "npm run build -w @neoms/client && tsc",
     "test": "vitest run",
@@ -28,6 +29,7 @@
     "setup:env": "node scripts/setup-env.mjs",
     "demo": "tsx --env-file=.env scripts/demo.ts",
     "build:mac": "npm run tauri -w @neoms/client -- build --bundles app",
+    "build:windows": "npm run tauri -w @neoms/client -- build --bundles nsis",
     "check": "npm run format:check && npm run lint && npm run typecheck && npm run build"
   },
   "dependencies": {

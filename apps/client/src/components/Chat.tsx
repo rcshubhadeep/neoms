@@ -36,11 +36,13 @@ export function Chat({
   channel,
   onMembers,
   onRevoked,
+  onRead,
 }: {
   me: Participant;
   channel: Conversation;
   onMembers: () => void;
   onRevoked: () => void;
+  onRead: (conversation: string, sequence: string) => void;
 }) {
   const key = `messages:${me.id}:${channel.id}`;
   const pendingKey = `pending:${me.id}:${channel.id}`;
@@ -48,6 +50,7 @@ export function Chat({
   const [pending, setPending] = useState<Pending[]>(() => cacheRead(pendingKey, []));
   const [draft, setDraft] = useState(() => cacheRead(`draft:${me.id}:${channel.id}`, ''));
   const [status, setStatus] = useState('Connecting');
+  const [readPosition, setReadPosition] = useState<string>();
   const [error, setError] = useState('');
   const [runs, setRuns] = useState<AgentRun[]>([]);
   const [hasMore, setHasMore] = useState(false);
@@ -61,6 +64,8 @@ export function Chat({
   const bottom = useRef<HTMLDivElement>(null);
   const onRevokedRef = useRef(onRevoked);
   onRevokedRef.current = onRevoked;
+  const onReadRef = useRef(onRead);
+  onReadRef.current = onRead;
   const updatePending = useCallback(
     (next: Pending[]) => {
       pendingRef.current = next;
@@ -127,6 +132,7 @@ export function Chat({
           setHasMore(snap.hasMore);
           setRuns(snap.runs);
           cursor.current = snap.cursor;
+          setReadPosition(snap.cursor);
           snapshotReady = true;
         }
         setStatus('Live');
@@ -152,6 +158,7 @@ export function Chat({
           const next = advance(cursor.current, event);
           if (next === cursor.current) return;
           cursor.current = next;
+          setReadPosition(next);
           if (event.type === 'message.upsert') {
             const message = event.data as Message;
             setMessages((old) => mergeMessages(old, [message]));
@@ -181,6 +188,42 @@ export function Chat({
       clearTimeout(timer);
     };
   }, [channel.id, me.id, denied, flush, updatePending]);
+  useEffect(() => {
+    if (readPosition === undefined) return;
+    let timer: ReturnType<typeof setTimeout>;
+    let disposed = false;
+    async function acknowledge() {
+      if (
+        disposed ||
+        revoked.current ||
+        document.visibilityState !== 'visible' ||
+        !document.hasFocus()
+      )
+        return;
+      try {
+        await api(`/conversations/${channel.id}/read`, {
+          method: 'POST',
+          body: JSON.stringify({ sequence: readPosition }),
+        });
+        if (!disposed) onReadRef.current(channel.id, readPosition!);
+      } catch {
+        if (!disposed) timer = setTimeout(acknowledge, 1200);
+      }
+    }
+    const schedule = () => {
+      clearTimeout(timer);
+      timer = setTimeout(acknowledge, 150);
+    };
+    schedule();
+    window.addEventListener('focus', schedule);
+    document.addEventListener('visibilitychange', schedule);
+    return () => {
+      disposed = true;
+      clearTimeout(timer);
+      window.removeEventListener('focus', schedule);
+      document.removeEventListener('visibilitychange', schedule);
+    };
+  }, [channel.id, readPosition]);
   useEffect(() => {
     bottom.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages.length, pending.length]);

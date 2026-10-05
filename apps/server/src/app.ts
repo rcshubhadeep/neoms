@@ -27,6 +27,7 @@ import {
   MessageInput,
   EditInput,
   RunInput,
+  ReadInput,
   InviteInput,
 } from '../../../packages/contracts/src/index.js';
 
@@ -133,7 +134,14 @@ app.get('/v1/workspaces/:workspace/conversations', async (c) =>
       await domain.workspaceAccess(tx, c.get('participant').id, workspace);
       return (
         await tx.query(
-          `select c.id,case when c.kind='dm' then (select p.name from conversation_members peer join participants p on p.id=peer.participant_id where peer.conversation_id=c.id and peer.participant_id<>$2 limit 1) else c.name end name,c.private,c.workspace_id,c.kind,c.created_by from conversations c join conversation_members cm on cm.conversation_id=c.id where c.workspace_id=$1 and cm.participant_id=$2 order by c.created_at`,
+          `select c.id,case when c.kind='dm' then (select p.name from conversation_members peer join participants p on p.id=peer.participant_id where peer.conversation_id=c.id and peer.participant_id<>$2 limit 1) else c.name end name,c.private,c.workspace_id,c.kind,c.created_by,c.sequence::text,
+           exists(select 1 from events e join messages m on m.id=(e.data->>'id')::uuid
+             where e.conversation_id=c.id and e.sequence>coalesce(cr.sequence,0)
+             and e.type='message.upsert' and e.data->>'revision'='1'
+             and m.author_id<>$2 and m.deleted_at is null) unread
+           from conversations c join conversation_members cm on cm.conversation_id=c.id
+           left join conversation_reads cr on cr.conversation_id=c.id and cr.participant_id=$2
+           where c.workspace_id=$1 and cm.participant_id=$2 order by c.created_at`,
           [workspace, c.get('participant').id],
         )
       ).rows;
@@ -150,6 +158,12 @@ app.post('/v1/workspaces/:workspace/conversations', async (c) => {
       input.private,
     ),
     201,
+  );
+});
+app.post('/v1/conversations/:conversation/read', async (c) => {
+  const input = ReadInput.parse(await c.req.json());
+  return c.json(
+    await domain.markRead(c.get('participant').id, id(c.req.param('conversation')), input.sequence),
   );
 });
 app.post('/v1/workspaces/:workspace/dms', async (c) => {
@@ -386,6 +400,7 @@ const routes: [string, string, z.ZodType?][] = [
   ['delete', '/conversations/{conversation}/members/{participant}'],
   ['get', '/conversations/{conversation}/messages/{message}'],
   ['get', '/conversations/{conversation}/messages'],
+  ['post', '/conversations/{conversation}/read', ReadInput],
   ['post', '/conversations/{conversation}/messages', MessageInput],
   ['patch', '/conversations/{conversation}/messages/{message}', EditInput],
   [

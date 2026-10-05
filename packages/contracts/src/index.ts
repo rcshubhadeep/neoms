@@ -10,6 +10,7 @@ export const EditInput = z.object({
   revision: z.number().int().positive(),
 });
 export const RunInput = z.object({ requestId: z.uuid() });
+export const ReadInput = z.object({ sequence: z.string().regex(/^\d{1,18}$/) });
 export const InviteInput = z.object({ token: z.string().min(32).max(128) });
 export const SummaryOutput = z.object({
   body: z.string().trim().min(1).max(12000),
@@ -73,6 +74,8 @@ export type Conversation = {
   private: boolean;
   kind: 'channel' | 'dm';
   created_by: string | null;
+  sequence?: string;
+  unread?: boolean;
 };
 export type Message = {
   id: string;
@@ -145,6 +148,8 @@ export const ConversationOutput = z.object({
   private: z.boolean(),
   kind: z.enum(['channel', 'dm']),
   created_by: z.uuid().nullable(),
+  sequence: z.string().optional(),
+  unread: z.boolean().optional(),
 });
 export const MessageOutput = z.object({
   id: z.uuid(),

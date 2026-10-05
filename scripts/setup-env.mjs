@@ -1,7 +1,9 @@
 import { randomBytes } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
-const raw = execFileSync('./node_modules/.bin/supabase', ['status', '-o', 'json'], {
+import { resolve } from 'node:path';
+const supabase = resolve('node_modules/supabase/dist/supabase.js');
+const raw = execFileSync(process.execPath, [supabase, 'status', '-o', 'json'], {
   encoding: 'utf8',
   stdio: ['ignore', 'pipe', 'inherit'],
 });

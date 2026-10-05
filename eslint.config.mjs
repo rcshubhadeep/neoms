@@ -7,6 +7,7 @@ export default ts.config(
       '**/dist/**',
       '**/target/**',
       'node_modules/**',
+      '.local/**',
       'playwright-report/**',
       'test-results/**',
     ],

@@ -60,14 +60,39 @@ test('workspace essentials: channels, DMs, admin roles, BYOK, invites, usage and
         .getByRole('navigation', { name: 'Channels' })
         .getByRole('button', { name: 'engineering', exact: true }),
     ).toBeVisible({ timeout: 10000 });
+    await bob
+      .getByRole('textbox', { name: 'Message engineering', exact: true })
+      .fill('Unread channel update');
+    await bob.getByRole('button', { name: 'Send message', exact: true }).click();
+    const unreadChannel = alice
+      .getByRole('navigation', { name: 'Channels' })
+      .getByRole('button', { name: 'engineering', exact: true });
+    await expect(unreadChannel).toHaveAttribute('data-unread', 'true', { timeout: 10000 });
+    await expect(unreadChannel).toHaveCSS('font-weight', '700');
+    await alice.reload();
+    await expect(unreadChannel).toHaveAttribute('data-unread', 'true', { timeout: 10000 });
+    await alice.bringToFront();
+    await unreadChannel.click();
+    await expect(alice.getByText('Unread channel update', { exact: true })).toBeVisible();
+    await expect(unreadChannel).not.toHaveAttribute('data-unread', 'true');
     await bob.getByRole('button', { name: 'Message Alice' }).click();
     await expect(bob.getByRole('heading', { name: 'Alice', exact: true })).toBeVisible();
     await bob
       .getByRole('textbox', { name: 'Message Alice', exact: true })
       .fill('A private note for Alice');
     await bob.getByRole('button', { name: 'Send message', exact: true }).click();
+    const unreadDm = alice
+      .getByRole('navigation', { name: 'Direct messages' })
+      .getByRole('button', { name: 'Bob', exact: true });
+    await expect(unreadDm).toHaveAttribute('data-unread', 'true', { timeout: 10000 });
+    await expect(unreadDm).toHaveCSS('font-weight', '700');
+    await alice.screenshot({ path: test.info().outputPath('unread-sidebar.png') });
+    await alice.reload();
+    await expect(unreadDm).toHaveAttribute('data-unread', 'true', { timeout: 10000 });
+    await alice.bringToFront();
     await alice.getByRole('button', { name: 'Message Bob' }).click();
     await expect(alice.getByText('A private note for Alice', { exact: true })).toBeVisible();
+    await expect(unreadDm).not.toHaveAttribute('data-unread', 'true');
     await expect(alice.getByRole('button', { name: 'Catch me up' })).toHaveCount(0);
     await alice.screenshot({ path: '/tmp/neoms-workspace-dm.png' });
     await alice.getByRole('button', { name: 'Workspace settings', exact: true }).click();

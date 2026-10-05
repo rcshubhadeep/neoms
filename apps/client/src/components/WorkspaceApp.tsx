@@ -34,6 +34,7 @@ export function WorkspaceApp({ session }: { session: Session }) {
   const workspaceRef = useRef(workspace);
   workspaceRef.current = workspace;
   const channelsRef = useRef(channels);
+  const readThrough = useRef<Record<string, string>>({});
   channelsRef.current = channels;
   const [error, setError] = useState('');
   const [dialog, setDialog] = useState<
@@ -68,7 +69,13 @@ export function WorkspaceApp({ session }: { session: Session }) {
         if (old.workspace_id === workspace && !rows.some((c) => c.id === old.id) && me)
           purgeConversation(me.id, old.id);
       setPeople(directory.filter((m) => m.enabled));
-      setChannels(rows);
+      setChannels(
+        rows.map((row) =>
+          row.sequence && BigInt(readThrough.current[row.id] || '0') >= BigInt(row.sequence)
+            ? { ...row, unread: false }
+            : row,
+        ),
+      );
       setSelected((old) => (rows.some((c) => c.id === old) ? old : rows[0]?.id || ''));
     } catch (e) {
       if (workspaceRef.current !== workspace) return;
@@ -83,6 +90,17 @@ export function WorkspaceApp({ session }: { session: Session }) {
       } else setError(explain(e));
     }
   }, [workspace, me, loadWorkspaces]);
+  const onRead = useCallback((conversation: string, sequence: string) => {
+    const previous = readThrough.current[conversation] || '0';
+    if (BigInt(sequence) > BigInt(previous)) readThrough.current[conversation] = sequence;
+    setChannels((rows) =>
+      rows.map((row) =>
+        row.id === conversation && row.sequence && BigInt(row.sequence) <= BigInt(sequence)
+          ? { ...row, unread: false }
+          : row,
+      ),
+    );
+  }, []);
   useEffect(() => {
     api<Participant>('/me')
       .then(setMe)
@@ -256,8 +274,10 @@ export function WorkspaceApp({ session }: { session: Session }) {
                 .filter((c) => c.kind === 'channel')
                 .map((c) => (
                   <button
-                    className="nav-item"
-                    aria-current={selected === c.id ? 'page' : undefined}
+                    className={`nav-item${c.unread ? ' nav-item--unread' : ''}`}
+                    data-unread={c.unread || undefined}
+                    aria-description={c.unread ? 'Unread messages' : undefined}
+                    aria-current={!settings && selected === c.id ? 'page' : undefined}
                     key={c.id}
                     onClick={() => {
                       setSelected(c.id);
@@ -269,6 +289,7 @@ export function WorkspaceApp({ session }: { session: Session }) {
                       {c.name}
                       {c.private && <span className="sr-only"> (private)</span>}
                     </span>
+                    {c.unread && <span className="nav-item__unread" aria-hidden />}
                   </button>
                 ))}
               {current && (
@@ -295,7 +316,9 @@ export function WorkspaceApp({ session }: { session: Session }) {
                   .filter((c) => c.kind === 'dm')
                   .map((c) => (
                     <button
-                      className="nav-item"
+                      className={`nav-item${c.unread ? ' nav-item--unread' : ''}`}
+                      data-unread={c.unread || undefined}
+                      aria-description={c.unread ? 'Unread messages' : undefined}
                       key={c.id}
                       aria-current={!settings && selected === c.id ? 'page' : undefined}
                       onClick={() => {
@@ -305,6 +328,7 @@ export function WorkspaceApp({ session }: { session: Session }) {
                     >
                       <MessageSquare aria-hidden />
                       <span>{c.name}</span>
+                      {c.unread && <span className="nav-item__unread" aria-hidden />}
                     </button>
                   ))}
               </nav>
@@ -394,6 +418,7 @@ export function WorkspaceApp({ session }: { session: Session }) {
             key={`${me.id}:${channel.id}`}
             me={me}
             channel={channel}
+            onRead={onRead}
             onMembers={() => open('members')}
             onRevoked={() => {
               purgeConversation(me.id, channel.id);

@@ -73,6 +73,20 @@ export async function createWorkspace(user: string, name: string) {
     return { ...workspace, role: 'owner' };
   });
 }
+export async function markRead(user: string, conversation: string, sequence: string) {
+  return transaction(async (tx) => {
+    const channel = await channelAccess(tx, user, conversation);
+    if (BigInt(sequence) > BigInt(channel.sequence))
+      throw new DomainError(400, 'Read position is beyond the conversation');
+    await tx.query(
+      `insert into conversation_reads(conversation_id,participant_id,sequence)
+       values($1,$2,$3) on conflict(conversation_id,participant_id)
+       do update set sequence=greatest(conversation_reads.sequence,excluded.sequence)`,
+      [conversation, user, sequence],
+    );
+    return { ok: true };
+  });
+}
 export async function createChannel(
   user: string,
   workspace: string,
