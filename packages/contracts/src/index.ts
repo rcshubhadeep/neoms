@@ -9,7 +9,98 @@ export const EditInput = z.object({
   body: z.string().trim().min(1).max(8000),
   revision: z.number().int().positive(),
 });
-export const RunInput = z.object({ requestId: z.uuid() });
+export const RunLimits = z.object({
+  maxContextTokens: z.number().int().min(2048).max(64000),
+  maxOutputTokens: z.number().int().min(128).max(8000),
+  maxMessages: z.number().int().min(1).max(500),
+  maxHistoryDays: z.number().int().min(1).max(365),
+  maxAttempts: z.number().int().min(1).max(3),
+  maxConcurrentRuns: z.number().int().min(1).max(100),
+  userDailyTokens: z.number().int().min(1).max(100000000),
+  workspaceMonthlyTokens: z.number().int().min(1).max(1000000000),
+  retentionDays: z.number().int().min(1).max(30),
+  allowSharing: z.boolean(),
+});
+export const RunLimitOverrides = RunLimits.partial().strict();
+export type RunPolicy = z.infer<typeof RunLimits>;
+export const RunScope = z
+  .object({
+    mode: z.enum(['recent', 'unread', 'since']).default('recent'),
+    since: z.iso.datetime().optional(),
+    afterSequence: z
+      .string()
+      .regex(/^\d{1,18}$/)
+      .optional(),
+    upperSequence: z
+      .string()
+      .regex(/^\d{1,18}$/)
+      .optional(),
+  })
+  .refine((scope) => scope.mode !== 'since' || !!scope.since, 'Choose a start date');
+export const RunInput = z.object({
+  requestId: z.uuid(),
+  agentId: z.uuid().optional(),
+  scope: RunScope.optional(),
+  limits: RunLimitOverrides.optional(),
+  allowPartial: z.boolean().default(false),
+  selectionHash: z
+    .string()
+    .regex(/^[a-f0-9]{64}$/)
+    .optional(),
+});
+export type RunRequest = z.infer<typeof RunInput>;
+export const CoverageOutput = z.object({
+  selectedMessages: z.number().int(),
+  totalMessages: z.number().int(),
+  omittedMessages: z.number().int(),
+  from: z.string().nullable(),
+  to: z.string().nullable(),
+  estimatedInputTokens: z.number().int(),
+});
+export type Coverage = z.infer<typeof CoverageOutput>;
+export const RunPreviewOutput = z.object({
+  agentId: z.uuid(),
+  scope: RunScope,
+  policy: RunLimits,
+  coverage: CoverageOutput,
+  selectionHash: z.string(),
+});
+export type RunPreview = z.infer<typeof RunPreviewOutput>;
+export const PrivateResultOutput = z.object({
+  body: z.string(),
+  citations: z.array(z.uuid()),
+  stale: z.boolean(),
+  expires_at: z.string(),
+  shared_message_id: z.uuid().nullable(),
+  shared_by: z.uuid().nullable(),
+});
+export type PrivateResult = z.infer<typeof PrivateResultOutput>;
+export const PolicySettingsOutput = z.object({
+  limits: RunLimits,
+  agents: z.array(z.object({ id: z.uuid(), name: z.string(), limits: RunLimitOverrides })),
+  conversations: z.array(z.object({ id: z.uuid(), name: z.string(), limits: RunLimitOverrides })),
+});
+export type PolicySettings = z.infer<typeof PolicySettingsOutput>;
+export const PolicyInput = z
+  .object({
+    layer: z.enum(['workspace', 'agent', 'conversation']),
+    targetId: z.uuid().optional(),
+    limits: RunLimitOverrides,
+  })
+  .refine((input) => input.layer === 'workspace' || !!input.targetId, 'Choose a policy target');
+export const AgentOperation = z.enum(['summarize', 'suggest_actions']);
+export const AgentVersionOutput = z.object({
+  agent_id: z.uuid(),
+  version: z.number().int().positive(),
+  operation: AgentOperation,
+  instructions: z.string().max(8000),
+});
+export type AgentVersion = z.infer<typeof AgentVersionOutput>;
+export const AgentOutput = AgentVersionOutput.extend({
+  name: z.string(),
+  key: z.string(),
+});
+export type Agent = z.infer<typeof AgentOutput>;
 export const ReadInput = z.object({ sequence: z.string().regex(/^\d{1,18}$/) });
 export const InviteInput = z.object({ token: z.string().min(32).max(128) });
 export const SummaryOutput = z.object({
@@ -140,13 +231,23 @@ export type AgentRun = {
   status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
   provider: string;
   error: string | null;
+  agent_id?: string;
+  agent_version?: number;
+  coverage?: Coverage;
+  result?: PrivateResult | null;
 };
 export type ConversationEvent = {
   sequence: string;
   type: 'message.upsert' | 'run.updated' | 'noop';
   data: Message | AgentRun;
 };
-export type Snapshot = { messages: Message[]; cursor: string; hasMore: boolean; runs: AgentRun[] };
+export type Snapshot = {
+  messages: Message[];
+  cursor: string;
+  hasMore: boolean;
+  runs: AgentRun[];
+  readSequence?: string;
+};
 export class ApiError extends Error {
   constructor(
     public status: number,
@@ -214,6 +315,10 @@ export const RunOutput = z.object({
   status: z.enum(['queued', 'running', 'completed', 'failed', 'cancelled']),
   provider: z.string(),
   error: z.string().nullable(),
+  agent_id: z.uuid().optional(),
+  agent_version: z.number().int().positive().optional(),
+  coverage: CoverageOutput.optional(),
+  result: PrivateResultOutput.nullable().optional(),
 });
 export const EventOutput = z.object({
   sequence: z.string(),
@@ -225,6 +330,7 @@ export const SnapshotOutput = z.object({
   cursor: z.string(),
   hasMore: z.boolean(),
   runs: z.array(RunOutput),
+  readSequence: z.string().optional(),
 });
 export const ChangesOutput = z.object({
   events: z.array(EventOutput),

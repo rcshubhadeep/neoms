@@ -11,10 +11,16 @@ import {
   channelAccess,
   updateRun,
   DomainError,
+  maintainAgentRuns,
 } from '../../../packages/domain/src/index.js';
 import { beginUsage, reportUsage } from '../../../packages/domain/src/administration.js';
-import { summarize } from './provider.js';
+import { executeAgent } from './provider.js';
 await startQueue();
+await maintainAgentRuns();
+const maintenance = setInterval(
+  () => void maintainAgentRuns().catch(() => console.error('Agent maintenance failed')),
+  60000,
+);
 await boss.work<{ runId: string }>(SUMMARY_QUEUE, { pollingIntervalSeconds: 1 }, async (jobs) => {
   for (const job of jobs) {
     try {
@@ -24,8 +30,11 @@ await boss.work<{ runId: string }>(SUMMARY_QUEUE, { pollingIntervalSeconds: 1 },
       const attempt = await beginUsage(job.data.runId);
       let output;
       try {
-        output = await summarize(context.messages, context.configuration, (tokens) =>
-          reportUsage(attempt, tokens),
+        output = await executeAgent(
+          context.messages,
+          context.configuration,
+          context.agent,
+          (tokens) => reportUsage(attempt, tokens),
         );
       } finally {
         await reportUsage(attempt);
@@ -47,19 +56,17 @@ await boss.work<{ runId: string }>(SUMMARY_QUEUE, { pollingIntervalSeconds: 1 },
         } catch (accessError) {
           if (!(accessError instanceof DomainError && accessError.status === 403))
             throw accessError;
-          await tx.query(
-            "update agent_runs set status='cancelled',error='Channel access was revoked' where id=$1",
-            [run.id],
-          );
+          await updateRun(tx, run.id, 'cancelled', 'Conversation access was revoked');
         }
       });
       throw error;
     }
   }
 });
-console.log('Neoms summary worker ready');
+console.log('Neoms agent worker ready');
 for (const signal of ['SIGINT', 'SIGTERM'])
   process.on(signal, async () => {
+    clearInterval(maintenance);
     await boss.stop();
     await pool.end();
     process.exit(0);

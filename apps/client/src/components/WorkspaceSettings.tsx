@@ -11,8 +11,9 @@ import type {
 import { api } from '../client';
 import { explain } from './shared';
 import { Avatar, Badge, Button, Callout, Field, Spinner } from './ui';
+import { AgentPolicySettings } from './AgentPolicySettings';
 
-type Tab = 'members' | 'invitations' | 'llm' | 'usage';
+type Tab = 'members' | 'invitations' | 'llm' | 'usage' | 'agent-policy';
 export function WorkspaceSettings({
   workspace,
   me,
@@ -50,6 +51,10 @@ export function WorkspaceSettings({
   tabRef.current = tab;
   const root = `/workspaces/${workspace.id}`;
   const load = useCallback(async () => {
+    if (tab === 'agent-policy') {
+      setLoadedTab(tab);
+      return;
+    }
     const generation = ++loadGeneration.current;
     const result = await api<Member[] | Invitation[] | UsageReport | LlmSettings>(
       `${root}/${tab === 'llm' ? 'llm' : tab === 'usage' ? 'usage' : tab === 'members' ? 'members' : 'invitations'}`,
@@ -168,6 +173,7 @@ export function WorkspaceSettings({
     ['invitations', 'Invitations', Mail],
     ['llm', 'LLM configuration', KeyRound],
     ['usage', 'Usage', ChartNoAxesColumn],
+    ['agent-policy', 'Agent limits', Settings],
   ] as const;
   return (
     <section className="workspace-settings" aria-label="Workspace administration">
@@ -519,8 +525,8 @@ export function WorkspaceSettings({
                   </select>
                 </label>
                 <p className="t-meta">
-                  Select the parameter your endpoint accepts. Replies are limited to 2,000 output
-                  tokens.
+                  Select the parameter your endpoint accepts. Agent limits determine the output
+                  token ceiling (2,000 by default).
                 </p>
               </details>
             )}
@@ -560,6 +566,7 @@ export function WorkspaceSettings({
           </Callout>
         </div>
       )}
+      {tab === 'agent-policy' && <AgentPolicySettings root={root} />}
       {tab === 'usage' && loadedTab === tab && (
         <div className="settings-section">
           <h2>Member token usage</h2>

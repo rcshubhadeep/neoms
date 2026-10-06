@@ -1,7 +1,18 @@
-import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { pool, transaction, enqueueSummary, type Tx } from '../../db/src/index.js';
 import { openKey } from './secrets.js';
-import type { Message, AgentRun, Role } from '../../contracts/src/index.js';
+import {
+  RunLimits,
+  SummaryOutput,
+  type Message,
+  type AgentRun,
+  type Role,
+  type RunRequest,
+} from '../../contracts/src/index.js';
+import { availableAgents, createBuiltInAgents, pinnedAgentVersion } from './agents.js';
+import { selectRunScope } from './run-scope.js';
+import { reserveBudget, resolvedPolicy, settleBudget } from './run-policy.js';
+import { invalidateResults, purgeExpiredResults, runView, validSources } from './run-results.js';
 
 export class DomainError extends Error {
   constructor(
@@ -52,24 +63,19 @@ export async function createWorkspace(user: string, name: string) {
       [workspace.id, user],
     );
     await tx.query('insert into workspace_llm(workspace_id) values($1)', [workspace.id]);
-    const agent = (
-      await tx.query("insert into participants(kind,name) values('agent','Assistant') returning id")
-    ).rows[0];
-    await tx.query(
-      "insert into workspace_members(workspace_id,participant_id,role) values($1,$2,'member')",
-      [workspace.id, agent.id],
-    );
+    await tx.query('insert into workspace_agent_policy(workspace_id) values($1)', [workspace.id]);
+    const agents = await createBuiltInAgents(tx, workspace.id);
     const conversation = (
       await tx.query(
         "insert into conversations(workspace_id,name,created_by) values($1,'general',$2) returning *",
         [workspace.id, user],
       )
     ).rows[0];
-    await tx.query('insert into conversation_members values($1,$2),($1,$3)', [
-      conversation.id,
-      user,
-      agent.id,
-    ]);
+    for (const participant of [user, ...agents])
+      await tx.query('insert into conversation_members values($1,$2)', [
+        conversation.id,
+        participant,
+      ]);
     return { ...workspace, role: 'owner' };
   });
 }
@@ -108,7 +114,7 @@ export async function createChannel(
       );
     } else
       await tx.query(
-        'insert into conversation_members select $1,participant_id from workspace_members where workspace_id=$2 and enabled',
+        "insert into conversation_members select $1,wm.participant_id from workspace_members wm join participants p on p.id=wm.participant_id where wm.workspace_id=$2 and wm.enabled and p.kind='human'",
         [channel.id, workspace],
       );
     return channel;
@@ -189,6 +195,13 @@ export async function changeMembership(
         'delete from conversation_members where conversation_id=$1 and participant_id=$2',
         [conversation, participant],
       );
+    const affected = (
+      await tx.query(
+        'select id,status,error from agent_runs where conversation_id=$1 and agent_id=$2',
+        [conversation, participant],
+      )
+    ).rows;
+    for (const run of affected) await updateRun(tx, run.id, run.status, run.error);
     return { ok: true };
   });
 }
@@ -277,6 +290,7 @@ export async function mutateMessage(
     );
     for (const summary of summaries.rows)
       await emit(tx, conversation, 'message.upsert', await getMessage(tx, summary.id));
+    await invalidateResults(tx, conversation, id);
     return changed;
   });
 }
@@ -295,17 +309,28 @@ export async function snapshot(user: string, conversation: string, before?: stri
         [conversation, boundary?.created_at ?? null, boundary?.id ?? null],
       )
     ).rows;
-    const runs = (
+    await purgeExpiredResults(tx, conversation);
+    const runRows = (
       await tx.query(
-        'select id,status,provider,error from agent_runs where conversation_id=$1 and requester_id=$2 order by created_at desc limit 10',
+        'select id,status,provider,error,agent_id,agent_version from agent_runs where conversation_id=$1 and requester_id=$2 order by created_at desc limit 10',
         [conversation, user],
       )
     ).rows;
+    const runs: AgentRun[] = [];
+    for (const run of runRows) runs.push(await runView(tx, user, run.id));
+    const readSequence =
+      (
+        await tx.query(
+          'select sequence::text from conversation_reads where conversation_id=$1 and participant_id=$2',
+          [conversation, user],
+        )
+      ).rows[0]?.sequence ?? '0';
     return {
       messages: messages.slice(0, 50).reverse(),
       hasMore: messages.length > 50,
       cursor: channel.sequence,
       runs,
+      readSequence,
     };
   });
 }
@@ -340,7 +365,9 @@ export async function changes(
         if (!permitted.rowCount) {
           event.type = 'noop';
           event.data = {};
-        }
+        } else event.data = await runView(tx, user, event.data.id);
+      } else if (event.type === 'message.upsert' && event.data.author_kind === 'agent') {
+        event.data = await getMessage(tx, event.data.id);
       }
     const result = {
       events,
@@ -351,25 +378,55 @@ export async function changes(
     return result;
   });
 }
-export async function startSummary(user: string, conversation: string, requestId: string) {
+export async function conversationAgents(user: string, conversation: string) {
   return transaction(async (tx) => {
     const channel = await channelAccess(tx, user, conversation);
+    return availableAgents(tx, channel.workspace_id, conversation, channel.kind === 'dm');
+  });
+}
+export async function startSummary(
+  user: string,
+  conversation: string,
+  requestId: string,
+  agentId?: string,
+  options: Partial<Pick<RunRequest, 'scope' | 'limits' | 'allowPartial' | 'selectionHash'>> = {},
+) {
+  return transaction(async (tx) => {
+    const channel = await channelAccess(tx, user, conversation);
+    const requestHash = hash(
+      JSON.stringify({
+        agentId: agentId ?? null,
+        scope: options.scope ?? null,
+        limits: options.limits ?? null,
+        allowPartial: options.allowPartial ?? false,
+        selectionHash: options.selectionHash ?? null,
+      }),
+    );
     const existing = (
       await tx.query(
-        'select id,status,provider,error from agent_runs where conversation_id=$1 and requester_id=$2 and request_id=$3',
+        `select r.id,r.status,r.provider,r.error,r.agent_id,r.agent_version,r.request_hash,d.key
+         from agent_runs r join agent_definitions d on d.agent_id=r.agent_id
+         where r.conversation_id=$1 and r.requester_id=$2 and r.request_id=$3`,
         [conversation, user, requestId],
       )
     ).rows[0];
-    if (existing) return existing;
-    const agent = (
-      await tx.query(
-        channel.kind === 'dm'
-          ? "select p.id from participants p join workspace_members wm on wm.participant_id=p.id where wm.workspace_id=$1 and wm.enabled and p.kind='agent' order by p.id limit 1"
-          : "select p.id from participants p join conversation_members cm on cm.participant_id=p.id where cm.conversation_id=$1 and p.kind='agent' order by p.id limit 1",
-        [channel.kind === 'dm' ? channel.workspace_id : conversation],
-      )
-    ).rows[0];
-    if (!agent) throw new DomainError(400, 'Assistant has no access to this channel');
+    if (existing) {
+      if (agentId ? existing.agent_id !== agentId : existing.key !== 'scribe')
+        throw new DomainError(409, 'Request ID was already used for another agent');
+      if (existing.request_hash && existing.request_hash !== requestHash)
+        throw new DomainError(409, 'Request ID was already used for another scope');
+      return runView(tx, user, existing.id);
+    }
+    const agents = await availableAgents(
+      tx,
+      channel.workspace_id,
+      conversation,
+      channel.kind === 'dm',
+    );
+    const agent = agents.find((entry) =>
+      agentId ? entry.agent_id === agentId : entry.key === 'scribe',
+    );
+    if (!agent) throw new DomainError(403, 'Agent has no access to this conversation');
     const config = (
       await tx.query('select * from workspace_llm where workspace_id=$1 for share', [
         channel.workspace_id,
@@ -377,31 +434,90 @@ export async function startSummary(user: string, conversation: string, requestId
     ).rows[0];
     if (!config || (config.provider !== 'test' && !config.key_ciphertext))
       throw new DomainError(400, 'Ask a workspace admin to configure the LLM key');
+    const selection = await selectRunScope(tx, user, channel, agent, options);
+    if (options.selectionHash && options.selectionHash !== selection.selectionHash)
+      throw new DomainError(409, 'Scope or policy changed. Preview the run again.');
+    if (selection.coverage.omittedMessages && !options.allowPartial)
+      throw new DomainError(
+        409,
+        `${selection.coverage.selectedMessages} of ${selection.coverage.totalMessages} messages fit the policy. Preview and confirm the bounded run.`,
+      );
+    const reservation =
+      config.provider === 'test'
+        ? 0
+        : (selection.coverage.estimatedInputTokens + selection.policy.maxOutputTokens) *
+          selection.policy.maxAttempts;
+    await reserveBudget(tx, channel.workspace_id, user, selection.policy, reservation);
     const run = (
       await tx.query(
-        'insert into agent_runs(conversation_id,requester_id,agent_id,request_id,provider,model,config_revision) values($1,$2,$3,$4,$5,$6,$7) returning id,status,provider,error',
-        [conversation, user, agent.id, requestId, config.provider, config.model, config.revision],
+        `insert into agent_runs(conversation_id,requester_id,agent_id,request_id,provider,model,config_revision,agent_version,request_hash,scope,resolved_policy,source_refs,coverage,budget_tokens,deadline_at)
+         values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,now()+interval '10 minutes') returning id,status,provider,error,agent_id,agent_version`,
+        [
+          conversation,
+          user,
+          agent.agent_id,
+          requestId,
+          config.provider,
+          config.model,
+          config.revision,
+          agent.version,
+          requestHash,
+          JSON.stringify({ ...selection.scope, requestedLimits: options.limits ?? {} }),
+          JSON.stringify(selection.policy),
+          JSON.stringify(selection.refs),
+          JSON.stringify(selection.coverage),
+          reservation,
+        ],
       )
     ).rows[0];
     await enqueueSummary(tx, run.id);
     await emit(tx, conversation, 'run.updated', run);
-    return run;
+    return runView(tx, user, run.id);
   });
 }
-async function summaryAccess(
+export async function previewRun(user: string, conversation: string, input: RunRequest) {
+  return transaction(async (tx) => {
+    const channel = await channelAccess(tx, user, conversation);
+    const agents = await availableAgents(
+      tx,
+      channel.workspace_id,
+      conversation,
+      channel.kind === 'dm',
+    );
+    const agent = agents.find((entry) =>
+      input.agentId ? entry.agent_id === input.agentId : entry.key === 'scribe',
+    );
+    if (!agent) throw new DomainError(403, 'Agent has no access to this conversation');
+    const preview = await selectRunScope(tx, user, channel, agent, input);
+    return {
+      agentId: preview.agentId,
+      scope: preview.scope,
+      policy: preview.policy,
+      coverage: preview.coverage,
+      selectionHash: preview.selectionHash,
+    };
+  });
+}
+export async function summaryAccess(
   tx: Tx,
   run: { requester_id: string; agent_id: string; conversation_id: string },
 ) {
   const conversation = await channelAccess(tx, run.requester_id, run.conversation_id);
+  const definitions = await tx.query(
+    "select 1 from agent_definitions where agent_id=$1 and workspace_id=$2 and enabled and origin='built_in' and owner_id is null",
+    [run.agent_id, conversation.workspace_id],
+  );
+  if (!definitions.rowCount) throw new DomainError(403, 'Agent access denied');
   if (conversation.kind !== 'dm') {
     await channelAccess(tx, run.agent_id, run.conversation_id);
     return;
   }
   // A participant requests a bounded summary; the assistant does not become a DM member.
   await workspaceAccess(tx, run.agent_id, conversation.workspace_id);
-  const agent = await tx.query("select 1 from participants where id=$1 and kind='agent'", [
-    run.agent_id,
-  ]);
+  const agent = await tx.query(
+    "select 1 from agent_definitions where agent_id=$1 and origin='built_in' and key='scribe'",
+    [run.agent_id],
+  );
   if (!agent.rowCount) throw new DomainError(403, 'Assistant access denied');
 }
 export async function updateRun(
@@ -417,21 +533,34 @@ export async function updateRun(
       error,
     ])
   ).rows[0];
-  await emit(tx, run.conversation_id, 'run.updated', { id, status, provider: run.provider, error });
+  await emit(tx, run.conversation_id, 'run.updated', {
+    id,
+    status,
+    provider: run.provider,
+    error,
+    agent_id: run.agent_id,
+    agent_version: run.agent_version,
+  });
+  await settleBudget(tx, id);
   return run;
 }
 export async function prepareRun(id: string) {
   return transaction(async (tx) => {
     const run = (await tx.query('select * from agent_runs where id=$1', [id])).rows[0];
     if (!run || ['completed', 'cancelled'].includes(run.status)) return null;
+    if (!run.resolved_policy || !run.coverage) {
+      await updateRun(tx, id, 'cancelled', 'Legacy run requires a new scoped invocation');
+      return null;
+    }
+    if (new Date(run.deadline_at).getTime() <= Date.now()) {
+      await updateRun(tx, id, 'cancelled', 'Run deadline expired');
+      return null;
+    }
     try {
       await summaryAccess(tx, run);
     } catch (error) {
       if (!(error instanceof DomainError && error.status === 403)) throw error;
-      await tx.query(
-        "update agent_runs set status='cancelled',error='Channel access was revoked' where id=$1",
-        [id],
-      );
+      await updateRun(tx, id, 'cancelled', 'Conversation or agent access was revoked');
       return null;
     }
     if (
@@ -463,34 +592,41 @@ export async function prepareRun(id: string) {
       await updateRun(tx, id, 'cancelled', 'Workspace model configuration changed');
       return null;
     }
+    const policy = RunLimits.parse(run.resolved_policy);
+    if (run.attempts_started >= policy.maxAttempts) return null;
+    const currentPolicy = await resolvedPolicy(
+      tx,
+      config.workspace_id,
+      run.agent_id,
+      run.conversation_id,
+      run.scope.requestedLimits,
+    );
+    if (JSON.stringify(policy) !== JSON.stringify(currentPolicy)) {
+      await updateRun(tx, id, 'cancelled', 'Agent policy changed');
+      return null;
+    }
+    if (!(await validSources(tx, run)))
+      throw new Error('Source messages changed during generation');
     let apiKey: string | undefined;
     if (config.provider !== 'test') {
       if (!config.key_ciphertext) throw new Error('Workspace LLM key is missing');
       apiKey = openKey(config.key_ciphertext);
     }
     await updateRun(tx, id, 'running');
-    const messages: Message[] = (
-      await tx.query(
-        "select m.*,p.name author_name,p.kind author_kind from messages m join participants p on p.id=m.author_id where m.conversation_id=$1 and m.deleted_at is null and p.kind='human' order by m.created_at desc,m.id desc limit 40",
-        [run.conversation_id],
-      )
-    ).rows.reverse();
-    const bounded: Message[] = [];
-    let size = 0;
-    for (const message of messages.reverse()) {
-      if (size + message.body.length > 24000) break;
-      bounded.unshift(message);
-      size += message.body.length;
-    }
+    const messages: Message[] = [];
+    for (const ref of run.source_refs) messages.push(await getMessage(tx, ref.id));
     return {
       run,
-      messages: bounded,
+      agent: await pinnedAgentVersion(tx, run.agent_id, run.agent_version),
+      messages: messages as Message[],
       configuration: {
         provider: config.provider as string,
         model: config.model as string,
         baseUrl: config.base_url as string | null,
         tokenLimitParameter: config.token_limit_parameter as 'max_tokens' | 'max_completion_tokens',
         apiKey,
+        maxContextTokens: policy.maxContextTokens,
+        maxOutputTokens: policy.maxOutputTokens,
       },
     };
   });
@@ -503,14 +639,15 @@ export async function completeRun(
   return transaction(async (tx) => {
     const run = (await tx.query('select * from agent_runs where id=$1', [id])).rows[0];
     if (!run || ['completed', 'cancelled'].includes(run.status)) return;
+    if (new Date(run.deadline_at).getTime() <= Date.now()) {
+      await updateRun(tx, id, 'cancelled', 'Run deadline expired');
+      return;
+    }
     try {
       await summaryAccess(tx, run);
     } catch (error) {
       if (!(error instanceof DomainError && error.status === 403)) throw error;
-      await tx.query(
-        "update agent_runs set status='cancelled',error='Channel access was revoked' where id=$1",
-        [id],
-      );
+      await updateRun(tx, id, 'cancelled', 'Conversation or agent access was revoked');
       return;
     }
     if (
@@ -529,7 +666,12 @@ export async function completeRun(
       await updateRun(tx, id, 'cancelled', 'Workspace model configuration changed');
       return;
     }
-    const sourceIds = new Set(sources.map((m) => m.id));
+    const sourceIds = new Set(run.source_refs.map((source: { id: string }) => source.id));
+    if (sources.length !== sourceIds.size || sources.some((source) => !sourceIds.has(source.id)))
+      throw new Error('Source set does not match the scoped run');
+    if (!(await validSources(tx, run)))
+      throw new Error('Source messages changed during generation');
+    output = SummaryOutput.parse(output);
     if (output.citations.some((c) => !sourceIds.has(c)))
       throw new Error('Model cited an unknown source');
     for (const source of sources) {
@@ -537,21 +679,37 @@ export async function completeRun(
       if (!current || current.deleted_at || current.revision !== source.revision)
         throw new Error('Source messages changed during generation');
     }
-    const row = (
-      await tx.query(
-        'insert into messages(conversation_id,author_id,request_id,request_hash,body,citations,agent_run_id) values($1,$2,$3,$4,$5,$6,$7) on conflict(agent_run_id) do nothing returning id',
-        [
-          run.conversation_id,
-          run.agent_id,
-          randomUUID(),
-          hash(output.body),
-          output.body,
-          [...new Set(output.citations)],
-          id,
-        ],
-      )
-    ).rows[0];
-    if (row) await emit(tx, run.conversation_id, 'message.upsert', await getMessage(tx, row.id));
+    const channel = await channelAccess(tx, run.requester_id, run.conversation_id);
+    const policy = await resolvedPolicy(
+      tx,
+      channel.workspace_id,
+      run.agent_id,
+      run.conversation_id,
+      run.scope.requestedLimits,
+    );
+    if (JSON.stringify(policy) !== JSON.stringify(RunLimits.parse(run.resolved_policy))) {
+      await updateRun(tx, id, 'cancelled', 'Agent policy changed');
+      return;
+    }
+    await tx.query(
+      "insert into agent_results(run_id,body,citations,expires_at) values($1,$2,$3,now()+($4 * interval '1 day')) on conflict(run_id) do nothing",
+      [id, output.body, [...new Set(output.citations)], policy.retentionDays],
+    );
     await updateRun(tx, id, 'completed');
+  });
+}
+export async function maintainAgentRuns() {
+  // Purging holds result rows only; release them before taking conversation locks.
+  await transaction((tx) => purgeExpiredResults(tx));
+  await transaction(async (tx) => {
+    await tx.query(`select id from conversations where id in
+      (select conversation_id from agent_runs where deadline_at<=now() and status in ('queued','running','failed'))
+      order by id for update`);
+    const runs = (
+      await tx.query(
+        "select id from agent_runs where deadline_at<=now() and status in ('queued','running','failed')",
+      )
+    ).rows;
+    for (const run of runs) await updateRun(tx, run.id, 'cancelled', 'Run deadline expired');
   });
 }

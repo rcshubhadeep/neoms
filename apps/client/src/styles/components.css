@@ -1,5 +1,32 @@
 /* Primitives. Each block maps to a component in src/components/ui. */
 
+.agent-picker {
+  width: auto;
+  max-width: 140px;
+}
+
+.run-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-6);
+  border-bottom: 1px solid var(--border-default);
+}
+.run-controls label {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.run-controls .input {
+  width: auto;
+}
+.message--private {
+  border: 1px dashed var(--border-default);
+  margin: var(--space-3) var(--space-5);
+  border-radius: var(--radius-md);
+}
+
 /* Button */
 .btn {
   --btn-h: var(--control-md);

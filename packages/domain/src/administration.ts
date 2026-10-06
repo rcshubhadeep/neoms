@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
-import { pool, transaction, type Tx } from '../../db/src/index.js';
-import { DomainError, workspaceAccess, updateRun } from './index.js';
+import { transaction, type Tx } from '../../db/src/index.js';
+import { DomainError, workspaceAccess, updateRun, summaryAccess } from './index.js';
+import { settleBudget } from './run-policy.js';
 import { sealKey, openKey } from './secrets.js';
 import { llmBaseUrl, llmHeaders } from './llm-connection.js';
 import {
@@ -263,13 +264,29 @@ export async function usage(user: string, workspace: string) {
   });
 }
 export async function beginUsage(runId: string) {
-  return (
-    await pool.query(
-      `insert into llm_usage(run_id,workspace_id,participant_id,provider,model)
-    select r.id,c.workspace_id,r.requester_id,r.provider,r.model from agent_runs r join conversations c on c.id=r.conversation_id where r.id=$1 returning id`,
-      [runId],
+  return transaction(async (tx) => {
+    const initial = (await tx.query('select * from agent_runs where id=$1', [runId])).rows[0];
+    if (!initial) throw new DomainError(404, 'Run not found');
+    await summaryAccess(tx, initial);
+    const run = (await tx.query('select * from agent_runs where id=$1 for update', [runId]))
+      .rows[0];
+    if (
+      run.status !== 'running' ||
+      !run.resolved_policy ||
+      run.attempts_started >= run.resolved_policy.maxAttempts
     )
-  ).rows[0].id as string;
+      throw new DomainError(409, 'Run cannot start another model attempt');
+    await tx.query('update agent_runs set attempts_started=attempts_started+1 where id=$1', [
+      runId,
+    ]);
+    return (
+      await tx.query(
+        `insert into llm_usage(run_id,workspace_id,participant_id,provider,model)
+    select r.id,c.workspace_id,r.requester_id,r.provider,r.model from agent_runs r join conversations c on c.id=r.conversation_id where r.id=$1 returning id`,
+        [runId],
+      )
+    ).rows[0].id as string;
+  });
 }
 export type Tokens = {
   input_tokens: number;
@@ -278,15 +295,22 @@ export type Tokens = {
   cache_write_tokens: number;
 };
 export async function reportUsage(id: string, tokens?: Tokens) {
-  await pool.query(
-    "update llm_usage set status=$2,input_tokens=$3,output_tokens=$4,cache_read_tokens=$5,cache_write_tokens=$6 where id=$1 and status='started'",
-    [
-      id,
-      tokens ? 'reported' : 'unknown',
-      tokens?.input_tokens ?? null,
-      tokens?.output_tokens ?? null,
-      tokens?.cache_read_tokens ?? null,
-      tokens?.cache_write_tokens ?? null,
-    ],
-  );
+  await transaction(async (tx) => {
+    const attempt = (await tx.query('select run_id from llm_usage where id=$1', [id])).rows[0];
+    if (!attempt) return;
+    await tx.query('select id from agent_runs where id=$1 for update', [attempt.run_id]);
+    await tx.query(
+      "update llm_usage set status=$2,input_tokens=$3,output_tokens=$4,cache_read_tokens=$5,cache_write_tokens=$6 where id=$1 and (status='started' or ($7 and status='unknown'))",
+      [
+        id,
+        tokens ? 'reported' : 'unknown',
+        tokens?.input_tokens ?? null,
+        tokens?.output_tokens ?? null,
+        tokens?.cache_read_tokens ?? null,
+        tokens?.cache_write_tokens ?? null,
+        !!tokens,
+      ],
+    );
+    await settleBudget(tx, attempt.run_id);
+  });
 }

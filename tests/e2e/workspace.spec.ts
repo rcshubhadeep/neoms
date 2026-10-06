@@ -107,6 +107,8 @@ test('workspace essentials: channels, DMs, admin roles, BYOK, invites, usage and
     await expect(unreadDm).not.toHaveAttribute('data-unread', 'true');
     await alice.getByRole('button', { name: 'Catch me up', exact: true }).click();
     await expect(alice.getByText(/Test provider — not an AI summary/)).toBeVisible();
+    await expect(bob.getByText(/Test provider — not an AI summary/)).toHaveCount(0);
+    await alice.getByRole('button', { name: 'Post to conversation', exact: true }).click();
     await expect(bob.getByText(/Test provider — not an AI summary/)).toBeVisible();
     await alice.screenshot({ path: '/tmp/neoms-workspace-dm.png' });
     await alice.getByRole('button', { name: 'Workspace settings', exact: true }).click();

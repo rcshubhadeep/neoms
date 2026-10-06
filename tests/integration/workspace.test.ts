@@ -1,17 +1,29 @@
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { randomUUID, randomBytes } from 'node:crypto';
 import { createClient } from '@supabase/supabase-js';
-import { pool, startQueue, boss } from '../../packages/db/src/index.js';
+import { pool, transaction, startQueue, boss } from '../../packages/db/src/index.js';
 import * as domain from '../../packages/domain/src/index.js';
 import * as admin from '../../packages/domain/src/administration.js';
 import { openKey } from '../../packages/domain/src/secrets.js';
 import { app } from '../../apps/server/src/app.js';
 import { summarize } from '../../apps/worker/src/provider.js';
+import { readRun, shareRun } from '../../packages/domain/src/run-results.js';
 const auth = createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_SECRET_KEY!, {
   auth: { persistSession: false },
 });
 const users: string[] = [];
 const workspaces: string[] = [];
+afterEach(async () => {
+  await transaction(async (tx) => {
+    const runs = (
+      await tx.query(
+        "select r.id from agent_runs r join conversations c on c.id=r.conversation_id where c.workspace_id=any($1) and r.status in ('queued','running','failed')",
+        [workspaces],
+      )
+    ).rows;
+    for (const run of runs) await domain.updateRun(tx, run.id, 'cancelled');
+  });
+});
 let alice: { id: string; token: string }, bob: typeof alice, eve: typeof alice;
 let workspace: string, channel: string;
 async function person(name: string) {
@@ -108,10 +120,17 @@ describe('channels and private direct messages', () => {
     const context = (await domain.prepareRun(run.id))!;
     const summary = await summarize(context.messages, context.configuration);
     await domain.completeRun(run.id, context.messages, summary);
+    expect((await readRun(bob.id, dm.id, run.id)).result).toMatchObject({
+      body: summary.body,
+      citations: summary.citations,
+    });
+    await expect(readRun(eve.id, dm.id, run.id)).rejects.toMatchObject({ status: 404 });
+    await shareRun(bob.id, dm.id, run.id);
     const snapshot = await domain.snapshot(eve.id, dm.id);
     expect(
       snapshot.messages.find((m: { agent_run_id: string | null }) => m.agent_run_id === run.id),
-    ).toMatchObject({ body: summary.body, citations: summary.citations });
+    ).toMatchObject({ citations: summary.citations });
+    expect(snapshot.messages.find((m) => m.agent_run_id === run.id)?.body).toContain(summary.body);
     expect(
       (
         await pool.query('select count(*) from conversation_members where conversation_id=$1', [
@@ -478,6 +497,7 @@ describe('workspace BYOK and attributable usage', () => {
         expect(JSON.parse(init.body as string).model).toBe('controlled-test-model');
         return new Response(
           JSON.stringify({
+            type: 'message',
             content: [{ type: 'text', text: 'invalid JSON' }],
             usage: {
               input_tokens: 120,

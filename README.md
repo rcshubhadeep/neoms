@@ -24,7 +24,7 @@ Supabase start applies migrations when creating its database. `db:migrate` appli
 - Local Supabase Studio: http://127.0.0.1:54323
 - Design reference: http://127.0.0.1:1420/#/design (see [docs/DESIGN.md](docs/DESIGN.md))
 
-`npm run dev` starts the API, summary worker, and browser client. To open the Mac application in a separate terminal while those services run:
+`npm run dev` starts the API, agent worker, and browser client. To open the Mac application in a separate terminal while those services run:
 
 ```sh
 npm run dev:mac
@@ -212,7 +212,33 @@ New and migrated workspaces start with the deterministic **test provider**. Its 
 
 Secrets are encrypted with AES-256-GCM using `LLM_ENCRYPTION_KEY`, a 64-character hexadecimal installation secret shared by the API and worker. Local `setup:env` generates it. Self-host operators must supply it through their server secret configuration and back it up separately from the database. Never place it in a `VITE_` variable. Workspace APIs return only key-presence metadata, never plaintext or ciphertext. Legacy `AI_PROVIDER`/`ANTHROPIC_API_KEY`/`ANTHROPIC_MODEL` environment settings are no longer used.
 
-Use **Catch me up** in a channel or direct message you belong to. In DMs, either participant can request a summary, visible only inside that DM to its two participants. The assistant does not become a DM member. Requests use the workspace's model/key and contribute to the requesting member's usage. Replies link to source messages; editing/deleting sources invalidates affected summaries. Configuration changes invalidate unpublished runs. The assistant has no external-action tools.
+Use **Catch me up** in a channel or direct message you belong to. New results are visible only to the requester until they explicitly choose **Post to conversation**. In DMs, the assistant does not become a member; input consent is still the existing built-in compatibility behavior, with a separate consent gate required before expanding DM agents. Requests use the workspace's model/key and contribute to the requesting member's usage. Replies link to source messages; editing/deleting any selected source invalidates affected results. Configuration changes invalidate unfinished runs. The assistant has no external-action tools.
+
+Channels now have an agent picker: **Scribe** provides Catch me up, and **Planner**
+provides suggested actions with citations. Runs pin an immutable agent definition
+version. New workspaces include both agents in `general`; subsequent new channels
+require an explicit agent grant through **Members**. Existing Assistant identities
+and grants are preserved; add Planner to an existing channel through **Members**.
+Both agents use the same AI SDK adapter and workspace model connection. Choose
+**Recent messages**, **Unread when opened**, or **Since a date**. Scope is pinned
+before execution, and limited coverage requires confirmation. Private results
+show coverage, citations, and expiry; they are not persisted in browser storage.
+Posting stays in the source conversation and records the sharing human.
+
+Workspace settings → **Agent limits** controls context/output, messages, history,
+attempts, concurrency, UTC daily/member and monthly/workspace token budgets,
+retention, and sharing. Agent/conversation/request limits only tighten workspace
+ceilings. Full serialized input is conservatively estimated using UTF-8 bytes
+plus framing allowance; hosted calls reserve input and output for all allowed
+attempts. Unknown attempts remain charged at that estimate. These are token
+admission budgets, not dollar billing guarantees or exact provider tokenization.
+The deterministic test provider reserves no paid tokens. Private copies expire
+after 7 days by default, with server maintenance every minute and enforcement on
+read; intentionally published messages follow conversation retention.
+
+The [permission and visibility gates](docs/AGENT_PERMISSIONS.md) apply to every
+future capability. Durable execution improvements and the natural-language
+builder follow in the [agent implementation plan](docs/AGENT_IMPLEMENTATION_PLAN.md).
 
 See [workspace administration and deployment notes](docs/WORKSPACE_ADMINISTRATION.md) for roles, deployment configuration, secret recovery, and usage limits.
 

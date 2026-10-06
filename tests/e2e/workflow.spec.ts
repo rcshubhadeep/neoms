@@ -100,6 +100,38 @@ test('two people exchange, recover, summarize, and revoke access', async ({ brow
     await expect(alice.locator('.citations button')).toHaveCount(2);
     await alice.reload();
     await expect(alice.getByText(/Test provider — not an AI summary/)).toBeVisible();
+    await alice.getByRole('button', { name: 'Workspace settings', exact: true }).click();
+    await alice.getByRole('button', { name: 'Agent limits', exact: true }).click();
+    await alice.getByLabel('Maximum messages', { exact: true }).fill('1');
+    await alice.getByRole('button', { name: 'Save agent limits', exact: true }).click();
+    await expect(
+      alice.getByRole('status').filter({ hasText: 'Agent limits saved.' }),
+    ).toBeVisible();
+    await alice.getByRole('button', { name: 'Back to conversations', exact: true }).click();
+    await alice
+      .getByRole('combobox', { name: 'Choose an agent' })
+      .selectOption({ label: 'Planner' });
+    await alice.getByRole('button', { name: 'Suggest actions', exact: true }).click();
+    await expect(alice.getByRole('dialog', { name: 'Confirm limited coverage' })).toContainText(
+      '1 of 2 messages',
+    );
+    await alice.getByRole('button', { name: 'Run with this coverage', exact: true }).click();
+    await expect(alice.getByText(/Test provider — not an AI action plan/)).toBeVisible({
+      timeout: 20000,
+    });
+    await expect(bob.getByText(/Test provider — not an AI action plan/)).toHaveCount(0);
+    await expect(
+      alice.locator('.message--agent').filter({ hasText: 'not an AI action plan' }),
+    ).toContainText('Planner');
+    await alice.screenshot({ path: 'test-results/private-agent-result.png', fullPage: true });
+    await alice
+      .locator('.message--private')
+      .filter({ hasText: 'not an AI action plan' })
+      .getByRole('button', { name: 'Post to conversation', exact: true })
+      .click();
+    await expect(bob.getByText(/Test provider — not an AI action plan/)).toBeVisible();
+    await expect(bob.getByText(/Shared by Alice/)).toBeVisible();
+    await expect(bob.getByText(/Covered 1 of 2 messages/)).toBeVisible();
     await alice.getByRole('button', { name: 'Create channel', exact: true }).click();
     await alice.getByLabel('Name', { exact: true }).fill('private-project');
     await alice.getByLabel('Private channel').check();

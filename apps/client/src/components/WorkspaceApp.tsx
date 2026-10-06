@@ -44,6 +44,7 @@ export function WorkspaceApp({ session }: { session: Session }) {
   const [privateChannel, setPrivate] = useState(false);
   const [members, setMembers] = useState<Participant[]>([]);
   const [channelMembers, setChannelMembers] = useState<Participant[]>([]);
+  const [agentAccessRevision, setAgentAccessRevision] = useState(0);
   const [busy, setBusy] = useState(false);
   const current = workspaces.find((w) => w.id === workspace);
   const channel = channels.find((c) => c.id === selected);
@@ -203,6 +204,7 @@ export function WorkspaceApp({ session }: { session: Session }) {
         method: exists ? 'DELETE' : 'POST',
       });
       setChannelMembers(await api<Participant[]>(`/conversations/${selected}/members`));
+      setAgentAccessRevision((revision) => revision + 1);
     } catch (e) {
       setError(explain(e));
     }
@@ -418,6 +420,7 @@ export function WorkspaceApp({ session }: { session: Session }) {
             key={`${me.id}:${channel.id}`}
             me={me}
             channel={channel}
+            agentAccessRevision={agentAccessRevision}
             onRead={onRead}
             onMembers={() => open('members')}
             onRevoked={() => {

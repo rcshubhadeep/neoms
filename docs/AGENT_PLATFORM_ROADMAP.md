@@ -2,6 +2,11 @@
 
 Status: deferred until workspace essentials are complete; proposal following the design-system review on 2026-10-03. This document does not start implementation.
 
+Implementation of the bounded engine foundation started on 2026-10-06. Follow
+[the agent implementation plan](AGENT_IMPLEMENTATION_PLAN.md) for the current
+architecture, natural-language builder, slice ordering, and acceptance gates.
+The wider milestones below remain reference direction, not completed work.
+
 ## Outcome
 
 A workspace member creates a configured agent, an authorized owner adds it to selected channels, and people explicitly invoke it. Every run identifies its agent, configuration version, requester, scope, steps, and sources. People can inspect and cancel work; worker failures recover without duplicate replies or stale workers publishing results.

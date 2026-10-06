@@ -30,9 +30,9 @@ async function stop(child: ChildProcess) {
     }),
   ]);
 }
-function launch(file: string) {
+function launch(file: string, queue: string) {
   const child = spawn(process.execPath, ['--env-file=.env', '--import', 'tsx', file], {
-    env: { ...process.env, PORT: '3002' },
+    env: { ...process.env, PORT: '3002', SUMMARY_QUEUE: queue },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   child.stdout?.resume();
@@ -43,6 +43,10 @@ it('server restart preserves messages and queued agent work without an open clie
   if (!process.env.DATABASE_URL?.includes('127.0.0.1:54322'))
     throw new Error('Local database required');
   await startQueue();
+  // Other integration tests enqueue runs that they complete directly. Isolate
+  // restart work so their abandoned queue entries cannot delay this worker.
+  const queue = `summary-restart-${randomUUID()}`;
+  await boss.createQueue(queue);
   const admin = createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_SECRET_KEY!, {
     auth: { persistSession: false },
   });
@@ -79,7 +83,7 @@ it('server restart preserves messages and queued agent work without an open clie
       return response.ok ? true : undefined;
     });
   try {
-    server = launch('apps/server/src/index.ts');
+    server = launch('apps/server/src/index.ts', queue);
     await ready();
     workspace = (await request('/workspaces', { name: 'Restart proof' })).id;
     const channel = (await request(`/workspaces/${workspace}/conversations`))[0].id;
@@ -90,7 +94,7 @@ it('server restart preserves messages and queued agent work without an open clie
     });
     const run = await request(`/conversations/${channel}/runs`, { requestId: randomUUID() });
     await stop(server);
-    server = launch('apps/server/src/index.ts');
+    server = launch('apps/server/src/index.ts', queue);
     await ready();
     const snapshot = await request(`/conversations/${channel}/messages`);
     expect(snapshot.messages.map((m: { id: string }) => m.id)).toContain(message.id);
@@ -104,27 +108,28 @@ it('server restart preserves messages and queued agent work without an open clie
       ).id,
     ).toBe(message.id);
     // All client requests stop before the independent worker is launched.
-    worker = launch('apps/worker/src/index.ts');
+    worker = launch('apps/worker/src/index.ts', queue);
     await waitFor(async () => {
       const result = await pool.query('select status from app.agent_runs where id=$1', [run.id]);
       return result.rows[0]?.status === 'completed' ? true : undefined;
     });
     expect(
-      (await pool.query('select count(*) from app.messages where agent_run_id=$1', [run.id]))
-        .rows[0].count,
+      (await pool.query('select count(*) from app.agent_results where run_id=$1', [run.id])).rows[0]
+        .count,
     ).toBe('1');
     await stop(worker);
-    worker = launch('apps/worker/src/index.ts');
+    worker = launch('apps/worker/src/index.ts', queue);
     await sleep(500);
     expect(
-      (await pool.query('select count(*) from app.messages where agent_run_id=$1', [run.id]))
-        .rows[0].count,
+      (await pool.query('select count(*) from app.agent_results where run_id=$1', [run.id])).rows[0]
+        .count,
     ).toBe('1');
   } finally {
     if (worker) await stop(worker);
     if (server) await stop(server);
     if (workspace) await pool.query('delete from app.workspaces where id=$1', [workspace]);
     await admin.auth.admin.deleteUser(user.data.user.id);
+    await boss.deleteQueue(queue);
     await boss.stop();
     await pool.end();
   }

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
-import { summarize } from '../../apps/worker/src/provider.js';
+import { executeAgent, summarize } from '../../apps/worker/src/provider.js';
 import { LlmBaseUrl, type Message } from '../../packages/contracts/src/index.js';
 
 const messages = [{ id: randomUUID(), author_name: 'Alice', body: 'Ship on Friday.' }] as Message[];
@@ -26,6 +26,21 @@ afterEach(() => {
   vi.unstubAllEnvs();
 });
 describe('OpenAI-compatible summary adapter', () => {
+  it('enforces resolved output and full input limits before sending credentials', async () => {
+    const fetch = vi.fn().mockResolvedValue(response());
+    vi.stubGlobal('fetch', fetch);
+    await summarize(messages, { ...configuration, maxOutputTokens: 256 });
+    expect(JSON.parse(fetch.mock.calls[0][1].body).max_completion_tokens).toBe(256);
+    fetch.mockClear();
+    await expect(
+      executeAgent(
+        messages,
+        { ...configuration, maxContextTokens: 2048 },
+        { operation: 'summarize', instructions: 'x'.repeat(3000) },
+      ),
+    ).rejects.toThrow('context policy');
+    expect(fetch).not.toHaveBeenCalled();
+  });
   it('sends a bounded Chat Completions request and records reported usage', async () => {
     const fetch = vi.fn().mockResolvedValue(response());
     vi.stubGlobal('fetch', fetch);
@@ -36,7 +51,7 @@ describe('OpenAI-compatible summary adapter', () => {
     expect(options).toMatchObject({
       method: 'POST',
       redirect: 'error',
-      headers: { Authorization: 'Bearer controlled-secret' },
+      headers: { authorization: 'Bearer controlled-secret' },
     });
     const body = JSON.parse(options.body);
     expect(Object.keys(body).sort()).toEqual(['max_completion_tokens', 'messages', 'model']);
@@ -90,6 +105,7 @@ describe('OpenAI-compatible summary adapter', () => {
   it('preserves Anthropic requests and cache usage', async () => {
     const fetch = vi.fn().mockResolvedValue(
       Response.json({
+        type: 'message',
         content: [{ type: 'text', text: JSON.stringify(answer) }],
         usage: {
           input_tokens: 8,
@@ -120,6 +136,40 @@ describe('OpenAI-compatible summary adapter', () => {
     vi.stubGlobal('fetch', fetch);
     expect((await summarize(messages, 'test')).body).toContain('Test provider');
     expect(fetch).not.toHaveBeenCalled();
+  });
+  it('executes Planner through the same adapter with distinct instructions', async () => {
+    const fetch = vi.fn().mockResolvedValue(response());
+    vi.stubGlobal('fetch', fetch);
+    await executeAgent(messages, configuration, {
+      operation: 'suggest_actions',
+      instructions: 'List blockers separately.',
+    });
+    const instructions = JSON.parse(fetch.mock.calls[0][1].body).messages[0].content;
+    expect(instructions).toContain('Distinguish suggestions from commitments');
+    expect(instructions).toContain('List blockers separately.');
+    expect(instructions).toContain('You have no tools');
+    expect(
+      (
+        await executeAgent(messages, 'test', {
+          operation: 'suggest_actions',
+          instructions: '',
+        })
+      ).body,
+    ).toContain('not an AI action plan');
+  });
+  it('does not silently retry billable provider requests', async () => {
+    const fetch = vi.fn().mockResolvedValue(new Response('controlled-secret', { status: 503 }));
+    vi.stubGlobal('fetch', fetch);
+    await expect(summarize(messages, configuration)).rejects.toThrow('Model request failed (503)');
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+  it('rejects redirected model endpoints without exposing the redirect or key', async () => {
+    const fetch = vi.fn().mockRejectedValue(new TypeError('redirect to controlled-secret'));
+    vi.stubGlobal('fetch', fetch);
+    await expect(summarize(messages, configuration)).rejects.toThrow(
+      'Model request could not reach the configured endpoint',
+    );
+    expect(fetch.mock.calls[0][1].redirect).toBe('error');
   });
   it('enforces the installation host policy before sending credentials', async () => {
     vi.stubEnv('LLM_ALLOWED_HOSTS', 'api.openai.com');

@@ -79,6 +79,24 @@ Malformed answers are validated after usage is recorded and may still incur char
 
 ## Deployment configuration
 
+Agent policy now has a separate **Agent limits** settings section. Workspace
+ceilings resolve with agent, conversation, and requested overrides by taking the
+minimum; sharing can be disabled at any layer. Input/output, history/message,
+attempt/concurrency, retention, and UTC token budget limits are saved on each run.
+Hosted calls reserve full input/output estimates for every allowed attempt before
+enqueue; reported usage reconciles the reservation and unknown calls remain
+conservatively charged. This is a token admission budget, not a monetary spend
+cap or invoice reconciliation. Test mode has no paid-token reservation.
+
+New results are requester-only and never copied into shared events or persistent
+client caches. Post to conversation requires the requester to explicitly share,
+checks current grants/policy and every source dependency, and records the human.
+Private results expire after seven days by default (configurable 1–30); the worker
+purges expired content every minute and reads enforce expiry immediately. Published
+messages use conversation retention. Source edits/deletions invalidate both copies.
+See [all permission/visibility gates](AGENT_PERMISSIONS.md), including the existing
+built-in DM input-consent limitation and deferred owned-agent capabilities.
+
 Use the same workspace APIs for self-hosting and future SaaS hosting, with origins and public URLs supplied by deployment configuration:
 
 - API: `DATABASE_URL`, `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`, `LLM_ENCRYPTION_KEY`, `HOST`, `PORT`, and comma-separated `CLIENT_ORIGINS`.
