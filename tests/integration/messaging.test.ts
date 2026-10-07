@@ -6,6 +6,13 @@ import * as domain from '../../packages/domain/src/index.js';
 import { app } from '../../apps/server/src/app.js';
 import { executeAgent, summarize } from '../../apps/worker/src/provider.js';
 import { readRun, shareRun } from '../../packages/domain/src/run-results.js';
+import {
+  recoverExecutions,
+  requestCancellation,
+  heartbeatAttempt,
+  failAttempt,
+  generatedAttempt,
+} from '../../packages/domain/src/run-execution.js';
 import { setPolicy, policySettings } from '../../packages/domain/src/run-policy.js';
 import {
   beginUsage,
@@ -65,7 +72,7 @@ afterEach(async () => {
   await transaction(async (tx) => {
     const runs = (
       await tx.query(
-        "select r.id from agent_runs r join conversations c on c.id=r.conversation_id where c.workspace_id=any($1) and r.status in ('queued','running','failed')",
+        "select r.id from agent_runs r join conversations c on c.id=r.conversation_id where c.workspace_id=any($1) and r.status in ('queued','running','retrying','cancelling')",
         [workspaces],
       )
     ).rows;
@@ -85,6 +92,132 @@ describe('private bounded agent runs', () => {
     const agent = (await domain.conversationAgents(alice, channel.id))[0];
     return { workspace: ws.id, channel: channel.id, first, second, agent };
   }
+  it('claims exactly one worker owner under concurrent delivery', async () => {
+    const f = await fixture();
+    const run = await domain.startSummary(alice, f.channel, randomUUID());
+    const owners = await Promise.all([domain.prepareRun(run.id), domain.prepareRun(run.id)]);
+    expect(owners.filter(Boolean)).toHaveLength(1);
+    expect(
+      (await pool.query('select count(*) from run_attempts where run_id=$1', [run.id])).rows[0]
+        .count,
+    ).toBe('1');
+  });
+  it('keeps an older active run inspectable after newer completed runs and reload', async () => {
+    const f = await fixture();
+    const pending = await domain.startSummary(alice, f.channel, randomUUID());
+    for (let i = 0; i < 11; i++) {
+      const run = await domain.startSummary(alice, f.channel, randomUUID());
+      const context = (await domain.prepareRun(run.id))!;
+      await domain.completeRun(run.id, context.attempt.id, context.messages, {
+        body: 'Recent result',
+        citations: [f.first.id],
+      });
+    }
+    const snapshot = await domain.snapshot(alice, f.channel);
+    expect(snapshot.runs.some((run) => run.id === pending.id && run.status === 'queued')).toBe(
+      true,
+    );
+    expect(snapshot.runs).toHaveLength(11);
+  });
+  it('recovers an expired worker and fences stale completion, failure, and model starts', async () => {
+    const f = await fixture();
+    const run = await domain.startSummary(alice, f.channel, randomUUID());
+    const old = (await domain.prepareRun(run.id))!;
+    await beginUsage(run.id, old.attempt.id);
+    await pool.query(
+      "update run_attempts set lease_expires_at=now()-interval '1 second' where id=$1",
+      [old.attempt.id],
+    );
+    await expect(beginUsage(run.id, old.attempt.id)).rejects.toMatchObject({ status: 409 });
+    await recoverExecutions();
+    await failAttempt(run.id, undefined, 'An unowned stale preparation failure');
+    expect((await readRun(alice, f.channel, run.id)).status).toBe('retrying');
+    const newer = (await domain.prepareRun(run.id))!;
+    expect(newer.attempt.id).not.toBe(old.attempt.id);
+    expect(newer.messages.map((m) => m.id)).toEqual(old.messages.map((m) => m.id));
+    await expect(
+      domain.completeRun(run.id, old.attempt.id, old.messages, {
+        body: 'Stale worker',
+        citations: [f.first.id],
+      }),
+    ).rejects.toMatchObject({ status: 409 });
+    await failAttempt(run.id, old.attempt.id, 'Stale failure');
+    expect((await readRun(alice, f.channel, run.id)).status).toBe('running');
+    await generatedAttempt(run.id, newer.attempt.id);
+    await domain.completeRun(run.id, newer.attempt.id, newer.messages, {
+      body: 'Recovered result',
+      citations: [f.first.id],
+    });
+    const view = await readRun(alice, f.channel, run.id);
+    expect(view.inspection?.attempts.map((a) => a.status)).toEqual(['interrupted', 'completed']);
+    expect(view.inspection?.attempts[0].usage?.status).toBe('unknown');
+    expect(view.result?.body).toBe('Recovered result');
+    await Promise.all([shareRun(alice, f.channel, run.id), shareRun(alice, f.channel, run.id)]);
+    expect(
+      (await pool.query('select count(*) from messages where agent_run_id=$1', [run.id])).rows[0]
+        .count,
+    ).toBe('1');
+    await expect(
+      transaction((tx) => domain.updateRun(tx, run.id, 'running')),
+    ).rejects.toMatchObject({ status: 409 });
+  });
+  it('distinguishes requested cancellation from acknowledgement and blocks a late result', async () => {
+    const f = await fixture();
+    const run = await domain.startSummary(alice, f.channel, randomUUID());
+    const context = (await domain.prepareRun(run.id))!;
+    await beginUsage(run.id, context.attempt.id);
+    await expect(requestCancellation(bob, f.channel, run.id)).rejects.toMatchObject({
+      status: 404,
+    });
+    await requestCancellation(alice, f.channel, run.id);
+    expect((await readRun(alice, f.channel, run.id)).status).toBe('cancelling');
+    expect(await heartbeatAttempt(run.id, context.attempt.id)).toBe(false);
+    await domain.completeRun(run.id, context.attempt.id, context.messages, {
+      body: 'Too late',
+      citations: [f.first.id],
+    });
+    const view = await readRun(alice, f.channel, run.id);
+    expect(view.status).toBe('cancelled');
+    expect(view.result).toBeNull();
+    expect(view.inspection?.cancellation_requested_at).not.toBeNull();
+    expect(view.inspection?.attempts[0].usage?.status).toBe('unknown');
+    await requestCancellation(alice, f.channel, run.id);
+    const queued = await domain.startSummary(alice, f.channel, randomUUID());
+    await requestCancellation(alice, f.channel, queued.id);
+    expect(await domain.prepareRun(queued.id)).toBeNull();
+  });
+  it('bounds retries and prevents duplicate calls within one owned attempt', async () => {
+    const f = await fixture();
+    await setPolicy(alice, f.workspace, { layer: 'workspace', limits: { maxAttempts: 2 } });
+    const run = await domain.startSummary(alice, f.channel, randomUUID());
+    for (let i = 0; i < 2; i++) {
+      const context = (await domain.prepareRun(run.id))!;
+      await beginUsage(run.id, context.attempt.id);
+      await expect(beginUsage(run.id, context.attempt.id)).rejects.toMatchObject({ status: 409 });
+      await failAttempt(run.id, context.attempt.id, 'Model response failed');
+      expect((await readRun(alice, f.channel, run.id)).status).toBe(
+        i === 0 ? 'retrying' : 'failed',
+      );
+    }
+    expect(await domain.prepareRun(run.id)).toBeNull();
+    const view = await readRun(alice, f.channel, run.id);
+    expect(view.inspection?.attempts).toHaveLength(2);
+    expect(
+      view.inspection?.steps
+        .filter((s) => s.name === 'generation')
+        .every((s) => s.status === 'failed'),
+    ).toBe(true);
+  });
+  it('rechecks grants while generating and hides inspection after revocation', async () => {
+    const f = await fixture();
+    const run = await domain.startSummary(alice, f.channel, randomUUID(), f.agent.agent_id);
+    const context = (await domain.prepareRun(run.id))!;
+    await domain.changeMembership(alice, f.channel, f.agent.agent_id, false);
+    expect(await heartbeatAttempt(run.id, context.attempt.id)).toBe(false);
+    expect((await readRun(alice, f.channel, run.id)).inspection).toBeUndefined();
+    await failAttempt(run.id, context.attempt.id, 'Execution interrupted');
+    expect((await readRun(alice, f.channel, run.id)).status).toBe('cancelled');
+  });
   it('fails closed for personal agents until owner-access and consent gates exist', async () => {
     const f = await fixture();
     await pool.query(
@@ -105,7 +238,7 @@ describe('private bounded agent runs', () => {
     const boundary = (await domain.snapshot(alice, f.channel)).cursor;
     const run = await domain.startSummary(bob, f.channel, randomUUID());
     const context = (await domain.prepareRun(run.id))!;
-    await domain.completeRun(run.id, context.messages, {
+    await domain.completeRun(run.id, context.attempt.id, context.messages, {
       body: 'Requester secret result',
       citations: [f.first.id],
     });
@@ -213,7 +346,7 @@ describe('private bounded agent runs', () => {
     const f = await fixture();
     const run = await domain.startSummary(alice, f.channel, randomUUID());
     const context = (await domain.prepareRun(run.id))!;
-    await domain.completeRun(run.id, context.messages, {
+    await domain.completeRun(run.id, context.attempt.id, context.messages, {
       body: 'Derived secret answer',
       citations: [f.first.id],
     });
@@ -233,7 +366,7 @@ describe('private bounded agent runs', () => {
     await setPolicy(alice, f.workspace, { layer: 'workspace', limits: { allowSharing: false } });
     const run = await domain.startSummary(alice, f.channel, randomUUID());
     const context = (await domain.prepareRun(run.id))!;
-    await domain.completeRun(run.id, context.messages, {
+    await domain.completeRun(run.id, context.attempt.id, context.messages, {
       body: 'Cannot post',
       citations: [f.first.id],
     });
@@ -302,8 +435,8 @@ describe('private bounded agent runs', () => {
       429,
     ]);
     const run = results.find((r) => r.status === 'fulfilled')!.value;
-    await domain.prepareRun(run.id);
-    const attempt = await beginUsage(run.id);
+    const context = (await domain.prepareRun(run.id))!;
+    const attempt = await beginUsage(run.id, context.attempt.id);
     await reportUsage(attempt);
     await transaction((tx) => domain.updateRun(tx, run.id, 'cancelled'));
     expect(
@@ -324,7 +457,7 @@ describe('private bounded agent runs', () => {
           .budget_tokens,
       ),
     ).toBe(67);
-    await expect(beginUsage(run.id)).rejects.toMatchObject({ status: 409 });
+    await expect(beginUsage(run.id, context.attempt.id)).rejects.toMatchObject({ status: 409 });
   });
 });
 describe('API identity and access', () => {
@@ -541,7 +674,7 @@ describe('agent jobs and provenance', () => {
     expect(context.agent.operation).toBe('suggest_actions');
     const output = await executeAgent(context.messages, context.configuration, context.agent);
     expect(output.body).toContain('not an AI action plan');
-    await domain.completeRun(run.id, context.messages, output);
+    await domain.completeRun(run.id, context.attempt.id, context.messages, output);
     expect((await domain.startSummary(alice, conversation, requestId, planner.agent_id)).id).toBe(
       run.id,
     );
@@ -634,7 +767,7 @@ describe('agent jobs and provenance', () => {
       await expect(
         domain.startSummary(alice, conversation, randomUUID(), planner.agent_id),
       ).rejects.toMatchObject({ status: 403 });
-      await domain.completeRun(run.id, context.messages, {
+      await domain.completeRun(run.id, context.attempt.id, context.messages, {
         body: 'No late result',
         citations: [context.messages[0].id],
       });
@@ -658,8 +791,8 @@ describe('agent jobs and provenance', () => {
     expect(context).not.toBeNull();
     const output = await summarize(context!.messages, 'test');
     await Promise.all([
-      domain.completeRun(run.id, context!.messages, output),
-      domain.completeRun(run.id, context!.messages, output),
+      domain.completeRun(run.id, context!.attempt.id, context!.messages, output),
+      domain.completeRun(run.id, context!.attempt.id, context!.messages, output),
     ]);
     expect(
       (await pool.query('select count(*) from agent_results where run_id=$1', [run.id])).rows[0]
@@ -682,7 +815,7 @@ describe('agent jobs and provenance', () => {
     const run = await domain.startSummary(alice, conversation, randomUUID());
     const context = (await domain.prepareRun(run.id))!;
     await expect(
-      domain.completeRun(run.id, context.messages, {
+      domain.completeRun(run.id, context.attempt.id, context.messages, {
         body: 'Unsupported',
         citations: [randomUUID()],
       }),
@@ -696,7 +829,10 @@ describe('agent jobs and provenance', () => {
       source.revision,
     );
     await expect(
-      domain.completeRun(run.id, context.messages, { body: 'Old summary', citations: [source.id] }),
+      domain.completeRun(run.id, context.attempt.id, context.messages, {
+        body: 'Old summary',
+        citations: [source.id],
+      }),
     ).rejects.toThrow('Source messages changed');
   });
   it('invalidates a completed summary when its source is edited', async () => {
@@ -708,7 +844,7 @@ describe('agent jobs and provenance', () => {
     );
     const run = await domain.startSummary(alice, conversation, randomUUID());
     const context = (await domain.prepareRun(run.id))!;
-    await domain.completeRun(run.id, context.messages, {
+    await domain.completeRun(run.id, context.attempt.id, context.messages, {
       body: 'Ship Friday',
       citations: [source.id],
     });
@@ -723,7 +859,7 @@ describe('agent jobs and provenance', () => {
     const run = await domain.startSummary(bob, conversation, randomUUID());
     const context = (await domain.prepareRun(run.id))!;
     await domain.changeMembership(alice, conversation, bob, false);
-    await domain.completeRun(run.id, context.messages, {
+    await domain.completeRun(run.id, context.attempt.id, context.messages, {
       body: 'Hidden',
       citations: [context.messages[0].id],
     });

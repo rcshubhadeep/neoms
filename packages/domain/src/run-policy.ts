@@ -125,7 +125,7 @@ export async function reserveBudget(
     await tx.query(
       `select coalesce(sum(r.budget_tokens) filter(where r.created_at>=date_trunc('month',now() at time zone 'UTC') at time zone 'UTC'),0)::text monthly,
      coalesce(sum(r.budget_tokens) filter(where r.requester_id=$2 and r.created_at>=date_trunc('day',now() at time zone 'UTC') at time zone 'UTC'),0)::text daily,
-     count(*) filter(where r.status in ('queued','running') or (r.status='failed' and r.attempts_started<coalesce((r.resolved_policy->>'maxAttempts')::int,0)))::int active
+     count(*) filter(where r.status in ('queued','running','retrying','cancelling'))::int active
      from agent_runs r join conversations c on c.id=r.conversation_id where c.workspace_id=$1`,
       [workspace, user],
     )
@@ -145,11 +145,7 @@ export async function reserveBudget(
 export async function settleBudget(tx: Tx, runId: string) {
   const run = (await tx.query('select * from agent_runs where id=$1 for update', [runId])).rows[0];
   if (!run?.resolved_policy || run.provider === 'test') return;
-  if (
-    !['completed', 'cancelled'].includes(run.status) &&
-    run.attempts_started < run.resolved_policy.maxAttempts
-  )
-    return;
+  if (!['completed', 'cancelled', 'failed'].includes(run.status)) return;
   const perAttempt = run.coverage.estimatedInputTokens + run.resolved_policy.maxOutputTokens;
   const used = (
     await tx.query(

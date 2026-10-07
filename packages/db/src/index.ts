@@ -28,13 +28,18 @@ export async function startQueue() {
   await boss.start();
   await boss.createQueue(SUMMARY_QUEUE);
 }
-export async function enqueueSummary(tx: Tx, runId: string) {
+export async function enqueueSummary(
+  tx: Tx,
+  runId: string,
+  singletonKey = runId,
+  queue = SUMMARY_QUEUE,
+) {
   await boss.send(
-    SUMMARY_QUEUE,
+    queue,
     { runId },
     {
       db: { executeSql: (sql, values) => tx.query(sql, values) },
-      singletonKey: runId,
+      singletonKey,
       retryLimit: 2,
       retryDelay: 2,
       expireInSeconds: 120,

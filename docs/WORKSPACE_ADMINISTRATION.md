@@ -92,7 +92,7 @@ New results are requester-only and never copied into shared events or persistent
 client caches. Post to conversation requires the requester to explicitly share,
 checks current grants/policy and every source dependency, and records the human.
 Private results expire after seven days by default (configurable 1–30); the worker
-purges expired content every minute and reads enforce expiry immediately. Published
+purges expired content every five seconds and reads enforce expiry immediately. Published
 messages use conversation retention. Source edits/deletions invalidate both copies.
 See [all permission/visibility gates](AGENT_PERMISSIONS.md), including the existing
 built-in DM input-consent limitation and deferred owned-agent capabilities.

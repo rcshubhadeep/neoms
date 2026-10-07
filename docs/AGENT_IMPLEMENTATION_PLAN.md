@@ -51,14 +51,46 @@ Slice 2 is implemented and locally verified:
   the modified flow was rerun after its final changes. Formatting, lint, types, and production build
   passed; live-model semantic and native-device checks remain outstanding.
 
-Next: slice 3, durable execution and inspection. The natural-language builder,
+Slice 3 is implemented and locally verified:
+
+- Applied `20261006000300_run_execution.sql` locally. Unfinished work from the old
+  unfenced runner is cancelled on upgrade; completed private/public results remain.
+- Added durable execution attempts with exclusive ownership and a 90-second lease.
+  The worker checks authorization, configuration, policy, cancellation, and lease
+  ownership every two seconds. Recovery runs at startup and every five seconds,
+  respecting the original pinned sources, version, policy, budgets, and queue.
+- A stale/expired/replaced worker cannot start another model call, validate/save a
+  result, or overwrite the newer attempt with a failure. Each execution attempt
+  starts at most one model call. Attempts are bounded by the pinned maximum.
+- Persisted context confirmation, generation, validation, private result, and human
+  publication steps, plus attempt timestamps/status/error and usage. Retrying and
+  terminal failure are distinct. State transitions cannot reopen a terminal run.
+- Running cancellation first becomes `cancelling`; the worker aborts the provider
+  request and acknowledges `cancelled`. Queued cancellation is immediate. When a
+  worker cannot acknowledge, lease expiry revokes authority and recovery confirms
+  cancellation. This does not claim to undo provider processing or billing.
+- Added private Run details with pinned version/model, scope, selected source
+  revisions, limits, reserved/charged tokens, steps, attempts, usage, and Stop run.
+  Snapshots preserve all active runs alongside the latest ten runs after reload.
+  Inspection remains requester-only and is hidden when agent access is revoked.
+- Passed 68 unit/integration tests and all three browser workflows, including an
+  actual worker killed during a held local provider request, recovery to one result,
+  stale-worker rejection, cancellation/revocation aborting held requests, private
+  inspection after reload, and the browser Stop run control. The crash test forces
+  lease expiry after killing the process to avoid a 90-second wait in the suite.
+- Formatting, lint, TypeScript, production build, and whitespace checks passed.
+  No live hosted-model or native-device validation is claimed; no deployment or
+  remote migration was performed. Existing development services were reused for
+  browser verification; no additional port-1420 server was left running.
+
+Next: slice 4, owned agents and conversational configuration. The natural-language builder,
 custom-agent editing, tool execution, and Rust local executor remain unimplemented.
 
 Token estimates use full serialized prompts/instructions measured as UTF-8 bytes
 plus framing allowance. This deliberately conservative admission estimate is not
 an exact tokenizer or a dollar billing guarantee. Unknown started attempts keep
-their estimate; unused retry reservations release on completion/cancellation or
-deadline. Budgets use run creation in UTC calendar windows. Legacy public replies
+their estimate; unused retry reservations release on completion, cancellation,
+terminal failure, or deadline. Budgets use run creation in UTC calendar windows. Legacy public replies
 remain public; legacy unfinished runs must be invoked again with a pinned scope.
 
 ### Verify slice 2 now
@@ -82,7 +114,35 @@ workspace/conversation, and exchange messages.
    posting is denied. New channels need an agent grant through Members.
 
 Broader recipient sharing, @mention notification controls, full DM input consent,
-attempt fencing, cooperative cancellation, and the NL builder are subsequent gates.
+and the NL builder are subsequent gates.
+
+### Verify slice 3 now
+
+1. Run Scribe/Planner and choose Inspect run on the private result, beside Post to
+   conversation. Check the pinned version, scope, limits, selected sources,
+   execution steps, and usage. Reload and reopen
+   the details; the same completed record should be reconstructed.
+2. Verify from a second account that the run details and private result are absent.
+   Human posting exposes the conversation message, not the private inspection.
+3. With a running hosted request, choose Stop run. Observe stopping/cancellation
+   requested until the worker acknowledges. A cancelled run cannot save/post a
+   late result. The deterministic provider can finish too quickly to stop manually.
+4. Use `npm test` for the controlled crash/cancellation/revocation tests, including
+   a held local HTTP request. No hosted credentials or paid model calls are needed.
+
+### Slice 3 acceptance evidence
+
+| Pre-planned gate                                            | Verification                                         |
+| ----------------------------------------------------------- | ---------------------------------------------------- |
+| API restart and execution without an open client            | `tests/integration/restart.test.ts`                  |
+| Kill during generation, recover, one result and publication | `tests/integration/restart.test.ts`                  |
+| Exclusive claim; reject stale completion/start/failure      | `tests/integration/messaging.test.ts`                |
+| Cancel/expire/revoke; prevent late result                   | Messaging fault tests and held-request restart tests |
+| Provider abort, sanitized errors, unknown usage             | Provider tests and held-request restart tests        |
+| Bounded retries, budgets, sources, version/config pinning   | Existing messaging/workspace/provider regressions    |
+| Inspect from a private result after reload; Stop run        | `tests/e2e/workflow.spec.ts`                         |
+| Workspace/DM/admin/invite/BYOK/unread regressions           | All three existing browser workflows                 |
+| Types, style, production bundle                             | `npm run check` and `git diff --check`               |
 
 ## Architecture and decisions
 
@@ -230,6 +290,11 @@ these slices. Stable identities, versions, capability grants, configuration
 references, revocation, and an executor boundary preserve future integration.
 
 ## Validation and delivery
+
+For every subsequent change, map the work to its pre-planned acceptance gates
+before implementing. Verify those gates and the existing regression workflows
+before declaring completion. Record actual evidence and unresolved limitations;
+do not silently omit earlier privacy, scope, budget, messaging, or workspace gates.
 
 Use focused unit tests for provider wire contracts, usage/error handling, and
 typed edits; database-backed tests for authorization, version pinning, private

@@ -226,15 +226,56 @@ export type Message = {
   updated_at: string;
   deleted_at: string | null;
 };
+export const RunInspectionOutput = z.object({
+  created_at: z.string(),
+  finished_at: z.string().nullable(),
+  deadline_at: z.string(),
+  cancellation_requested_at: z.string().nullable(),
+  model: z.string().nullable(),
+  scope: RunScope,
+  policy: RunLimits,
+  budgetTokens: z.number().nonnegative(),
+  sources: z.array(z.object({ id: z.uuid(), revision: z.number().int() })),
+  attempts: z.array(
+    z.object({
+      number: z.number().int(),
+      status: z.string(),
+      started_at: z.string(),
+      finished_at: z.string().nullable(),
+      error: z.string().nullable(),
+      usage: z
+        .object({
+          status: z.string(),
+          input: z.number().nullable(),
+          output: z.number().nullable(),
+          cacheRead: z.number().nullable(),
+          cacheWrite: z.number().nullable(),
+        })
+        .nullable(),
+    }),
+  ),
+  steps: z.array(
+    z.object({
+      attempt: z.number().int().nullable(),
+      name: z.string(),
+      status: z.string(),
+      started_at: z.string(),
+      finished_at: z.string().nullable(),
+      error: z.string().nullable(),
+    }),
+  ),
+});
+export type RunInspection = z.infer<typeof RunInspectionOutput>;
 export type AgentRun = {
   id: string;
-  status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+  status: 'queued' | 'running' | 'retrying' | 'cancelling' | 'completed' | 'failed' | 'cancelled';
   provider: string;
   error: string | null;
   agent_id?: string;
   agent_version?: number;
   coverage?: Coverage;
   result?: PrivateResult | null;
+  inspection?: RunInspection;
 };
 export type ConversationEvent = {
   sequence: string;
@@ -312,13 +353,22 @@ export const MessageOutput = z.object({
 });
 export const RunOutput = z.object({
   id: z.uuid(),
-  status: z.enum(['queued', 'running', 'completed', 'failed', 'cancelled']),
+  status: z.enum([
+    'queued',
+    'running',
+    'retrying',
+    'cancelling',
+    'completed',
+    'failed',
+    'cancelled',
+  ]),
   provider: z.string(),
   error: z.string().nullable(),
   agent_id: z.uuid().optional(),
   agent_version: z.number().int().positive().optional(),
   coverage: CoverageOutput.optional(),
   result: PrivateResultOutput.nullable().optional(),
+  inspection: RunInspectionOutput.optional(),
 });
 export const EventOutput = z.object({
   sequence: z.string(),

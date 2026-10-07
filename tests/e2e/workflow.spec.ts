@@ -1,6 +1,9 @@
 import { test, expect } from '@playwright/test';
 import { createClient } from '@supabase/supabase-js';
 import { randomUUID } from 'node:crypto';
+import { createServer } from 'node:http';
+import { once } from 'node:events';
+import type { AddressInfo } from 'node:net';
 import pg from 'pg';
 
 test('two people exchange, recover, summarize, and revoke access', async ({ browser }) => {
@@ -25,7 +28,18 @@ test('two people exchange, recover, summarize, and revoke access', async ({ brow
   const b = await browser.newContext();
   const alice = await a.newPage();
   const bob = await b.newPage();
+  let providerStarted = false,
+    providerAborted = false;
+  const hangingProvider = createServer((req, res) => {
+    req.resume();
+    providerStarted = true;
+    res.on('close', () => {
+      providerAborted = true;
+    });
+  });
   try {
+    hangingProvider.listen(0, '127.0.0.1');
+    await once(hangingProvider, 'listening');
     for (const [page, account] of [
       [alice, accounts[0]],
       [bob, accounts[1]],
@@ -38,7 +52,12 @@ test('two people exchange, recover, summarize, and revoke access', async ({ brow
     }
     await alice.getByRole('button', { name: 'New workspace' }).click();
     await alice.getByLabel('Name', { exact: true }).fill(`Pilot ${suffix}`);
+    const workspaceResponse = alice.waitForResponse(
+      (response) =>
+        response.url().endsWith('/v1/workspaces') && response.request().method() === 'POST',
+    );
     await alice.getByRole('button', { name: 'Create', exact: true }).click();
+    const workspaceId = (await (await workspaceResponse).json()).id;
     await expect(alice.getByRole('heading', { level: 1, name: 'general' })).toBeVisible();
     await alice.getByRole('button', { name: 'Invite a teammate' }).click();
     const invite = alice.getByLabel('Invitation token');
@@ -100,6 +119,23 @@ test('two people exchange, recover, summarize, and revoke access', async ({ brow
     await expect(alice.locator('.citations button')).toHaveCount(2);
     await alice.reload();
     await expect(alice.getByText(/Test provider — not an AI summary/)).toBeVisible();
+    await alice
+      .locator('.message--private')
+      .getByRole('button', { name: 'Inspect run', exact: true })
+      .click();
+    const details = alice.getByRole('dialog', { name: 'Run details', exact: true });
+    await expect(details).toContainText('Only you can inspect this run.');
+    await expect(details).toContainText('Agent version 1');
+    await expect(details).toContainText('Attempt 1: completed');
+    await expect(details).toContainText('validation');
+    await expect(bob.getByRole('button', { name: /Inspect Scribe run/ })).toHaveCount(0);
+    await expect(bob.getByRole('button', { name: 'Inspect run', exact: true })).toHaveCount(0);
+    await alice.screenshot({
+      path: 'test-results/run-details.png',
+      fullPage: true,
+      animations: 'disabled',
+    });
+    await alice.getByRole('button', { name: 'Close dialog', exact: true }).click();
     await alice.getByRole('button', { name: 'Workspace settings', exact: true }).click();
     await alice.getByRole('button', { name: 'Agent limits', exact: true }).click();
     await alice.getByLabel('Maximum messages', { exact: true }).fill('1');
@@ -132,6 +168,43 @@ test('two people exchange, recover, summarize, and revoke access', async ({ brow
     await expect(bob.getByText(/Test provider — not an AI action plan/)).toBeVisible();
     await expect(bob.getByText(/Shared by Alice/)).toBeVisible();
     await expect(bob.getByText(/Covered 1 of 2 messages/)).toBeVisible();
+    const login = await createClient(
+      process.env.SUPABASE_URL!,
+      process.env.SUPABASE_PUBLISHABLE_KEY!,
+      { auth: { persistSession: false } },
+    ).auth.signInWithPassword({ email: accounts[0].email, password });
+    if (login.error) throw login.error;
+    const configured = await fetch(`http://127.0.0.1:3001/v1/workspaces/${workspaceId}/llm`, {
+      method: 'PATCH',
+      headers: {
+        Authorization: `Bearer ${login.data.session!.access_token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        provider: 'openai-compatible',
+        model: 'held-cancellation-test',
+        apiKey: 'local-test-key',
+        baseUrl: `http://127.0.0.1:${(hangingProvider.address() as AddressInfo).port}/v1`,
+      }),
+    });
+    expect(configured.ok).toBe(true);
+    await alice
+      .getByRole('combobox', { name: 'Choose an agent' })
+      .selectOption({ label: 'Scribe' });
+    await alice.getByRole('button', { name: 'Catch me up', exact: true }).click();
+    await alice.getByRole('button', { name: 'Run with this coverage', exact: true }).click();
+    await expect.poll(() => providerStarted).toBe(true);
+    await alice.getByRole('button', { name: 'Inspect Scribe run · running', exact: true }).click();
+    const stoppingDetails = alice.getByRole('dialog', { name: 'Run details', exact: true });
+    await expect(stoppingDetails).toContainText('generation');
+    await stoppingDetails.getByRole('button', { name: 'Stop run', exact: true }).click();
+    await expect(stoppingDetails).toContainText('Cancellation requested');
+    await expect(stoppingDetails).toContainText('Execution authority has been revoked', {
+      timeout: 10000,
+    });
+    await expect.poll(() => providerAborted).toBe(true);
+    await expect(bob.getByRole('button', { name: /Inspect.*cancelled/ })).toHaveCount(0);
+    await alice.getByRole('button', { name: 'Close dialog', exact: true }).click();
     await alice.getByRole('button', { name: 'Create channel', exact: true }).click();
     await alice.getByLabel('Name', { exact: true }).fill('private-project');
     await alice.getByLabel('Private channel').check();
@@ -165,6 +238,8 @@ test('two people exchange, recover, summarize, and revoke access', async ({ brow
     ).toHaveCount(0);
     await alice.screenshot({ path: 'test-results/workspace.png', fullPage: true });
   } finally {
+    hangingProvider.closeAllConnections();
+    await new Promise<void>((resolve) => hangingProvider.close(() => resolve()));
     await a.close();
     await b.close();
     const db = new pg.Pool({ connectionString: process.env.DATABASE_URL });

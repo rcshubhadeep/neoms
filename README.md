@@ -233,12 +233,21 @@ plus framing allowance; hosted calls reserve input and output for all allowed
 attempts. Unknown attempts remain charged at that estimate. These are token
 admission budgets, not dollar billing guarantees or exact provider tokenization.
 The deterministic test provider reserves no paid tokens. Private copies expire
-after 7 days by default, with server maintenance every minute and enforcement on
+after 7 days by default, with server maintenance every five seconds and enforcement on
 read; intentionally published messages follow conversation retention.
 
+Choose **Inspect run** beside **Post to conversation** on your private result
+(or **Inspect … run** in the run history) to see private execution details, steps, attempts,
+selected sources, limits, and usage, including after reload. **Stop run** requests
+cancellation; running work shows stopping until the worker acknowledges or its
+lease expires. Supported provider calls are aborted, but remote processing/billing
+may already have occurred. Retry attempts are bounded and stale workers cannot
+save a late result. Crash recovery preserves the pinned context; it restarts a
+model attempt rather than resuming a model's internal state.
+
 The [permission and visibility gates](docs/AGENT_PERMISSIONS.md) apply to every
-future capability. Durable execution improvements and the natural-language
-builder follow in the [agent implementation plan](docs/AGENT_IMPLEMENTATION_PLAN.md).
+future capability. The natural-language builder follows in the
+[agent implementation plan](docs/AGENT_IMPLEMENTATION_PLAN.md).
 
 See [workspace administration and deployment notes](docs/WORKSPACE_ADMINISTRATION.md) for roles, deployment configuration, secret recovery, and usage limits.
 

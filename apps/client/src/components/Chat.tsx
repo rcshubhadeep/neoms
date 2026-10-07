@@ -33,6 +33,7 @@ import {
 } from '../client';
 import { mergeMessages, advance, readEvents } from '../sync';
 import { explain } from './shared';
+import { RunDetails } from './RunDetails';
 import {
   Avatar,
   Badge,
@@ -69,6 +70,7 @@ export function Chat({
   const [readPosition, setReadPosition] = useState<string>();
   const [error, setError] = useState('');
   const [runs, setRuns] = useState<AgentRun[]>([]);
+  const [inspectedRun, setInspectedRun] = useState<string>();
   const resultCount = runs.filter((run) => run.result).length;
   const [agents, setAgents] = useState<Agent[]>([]);
   const [selectedAgent, setSelectedAgent] = useState('');
@@ -95,7 +97,7 @@ export function Chat({
     const abort = new AbortController();
     async function refreshResults() {
       for (const run of runsRef.current) {
-        if (!run.result || abort.signal.aborted) continue;
+        if (abort.signal.aborted) continue;
         try {
           const updated = await api<AgentRun>(`/conversations/${channel.id}/runs/${run.id}`, {
             signal: abort.signal,
@@ -414,7 +416,19 @@ export function Chat({
       setError(explain(e));
     }
   }
-  const activeRun = runs.find((r) => r.status === 'queued' || r.status === 'running');
+  const activeRun = runs.find((r) =>
+    ['queued', 'running', 'retrying', 'cancelling'].includes(r.status),
+  );
+  const inspected = runs.find((run) => run.id === inspectedRun);
+  async function cancelRun(run: AgentRun) {
+    try {
+      await api(`/conversations/${channel.id}/runs/${run.id}/cancel`, { method: 'POST' });
+      const updated = await api<AgentRun>(`/conversations/${channel.id}/runs/${run.id}`);
+      setRuns((old) => old.map((row) => (row.id === run.id ? updated : row)));
+    } catch (e) {
+      setError(explain(e));
+    }
+  }
   const choice = agents.find((agent) => agent.agent_id === selectedAgent);
   const activeAgentName =
     agents.find((agent) => agent.agent_id === activeRun?.agent_id)?.name ?? 'Agent';
@@ -521,6 +535,29 @@ export function Chat({
         </Dialog>
       )}
       <div className="conversation">
+        {inspected && (
+          <RunDetails
+            run={inspected}
+            onClose={() => setInspectedRun(undefined)}
+            onCancel={() => cancelRun(inspected)}
+            onSource={source}
+          />
+        )}
+        {runs.length > 0 && (
+          <div className="run-history" aria-label="Your recent agent runs">
+            {runs.map((run) => (
+              <Button
+                key={run.id}
+                size="sm"
+                variant="ghost"
+                onClick={() => setInspectedRun(run.id)}
+              >
+                Inspect {agents.find((agent) => agent.agent_id === run.agent_id)?.name ?? 'agent'}{' '}
+                run · {run.status}
+              </Button>
+            ))}
+          </div>
+        )}
         <div className="conversation-start">
           <span className="conversation-start__icon">
             <ChannelIcon aria-hidden />
@@ -715,6 +752,13 @@ export function Chat({
                     <p className="t-meta">
                       Private copy expires {new Date(run.result!.expires_at).toLocaleString()}
                     </p>
+                  </>
+                )}
+                <div className="private-result-actions">
+                  <Button size="sm" onClick={() => setInspectedRun(run.id)}>
+                    Inspect run
+                  </Button>
+                  {!run.result!.stale && (
                     <Button
                       size="sm"
                       disabled={!!run.result!.shared_message_id}
@@ -724,8 +768,8 @@ export function Chat({
                         ? 'Posted to conversation'
                         : 'Post to conversation'}
                     </Button>
-                  </>
-                )}
+                  )}
+                </div>
               </div>
             </article>
           ))}
@@ -768,17 +812,18 @@ export function Chat({
               <strong>{activeAgentName}</strong>{' '}
               {activeRun.status === 'queued'
                 ? 'is waiting to start'
-                : 'is reading the conversation'}
+                : activeRun.status === 'retrying'
+                  ? 'is waiting to retry'
+                  : activeRun.status === 'cancelling'
+                    ? 'is stopping'
+                    : 'is reading the conversation'}
             </span>
             <Spinner />
             <Button
               variant="ghost"
               size="sm"
-              onClick={() =>
-                api(`/conversations/${channel.id}/runs/${activeRun.id}/cancel`, {
-                  method: 'POST',
-                }).catch((e) => setError(explain(e)))
-              }
+              disabled={activeRun.status === 'cancelling'}
+              onClick={() => cancelRun(activeRun)}
             >
               Cancel
             </Button>

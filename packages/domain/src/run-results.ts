@@ -3,6 +3,7 @@ import { RunLimits, SummaryOutput, type AgentRun } from '../../contracts/src/ind
 import { transaction, type Tx } from '../../db/src/index.js';
 import { DomainError, channelAccess, summaryAccess, getMessage, emit, updateRun } from './index.js';
 import { resolvedPolicy } from './run-policy.js';
+import { step } from './run-execution.js';
 
 export async function purgeExpiredResults(tx: Tx, conversation?: string) {
   await tx.query(
@@ -51,6 +52,60 @@ export async function runView(tx: Tx, user: string, runId: string): Promise<Agen
     return { ...view, error: 'Agent access was revoked' };
   }
   if (run.coverage) view.coverage = run.coverage;
+  if (run.resolved_policy && run.deadline_at) {
+    const attempts = (
+      await tx.query(
+        `select a.number,a.status,a.started_at,a.finished_at,a.error,
+      u.status usage_status,u.input_tokens,u.output_tokens,u.cache_read_tokens,u.cache_write_tokens
+      from run_attempts a left join llm_usage u on u.attempt_id=a.id where a.run_id=$1 order by a.number`,
+        [runId],
+      )
+    ).rows;
+    const steps = (
+      await tx.query(
+        `select s.*,a.number attempt from run_steps s left join run_attempts a on a.id=s.attempt_id
+      where s.run_id=$1 order by s.started_at,s.id`,
+        [runId],
+      )
+    ).rows;
+    const iso = (date: Date | null) => date?.toISOString() ?? null;
+    const count = (value: string | null) => (value === null ? null : Number(value));
+    view.inspection = {
+      created_at: iso(run.created_at)!,
+      finished_at: iso(run.finished_at),
+      deadline_at: iso(run.deadline_at)!,
+      cancellation_requested_at: iso(run.cancellation_requested_at),
+      model: run.model,
+      scope: run.scope,
+      policy: RunLimits.parse(run.resolved_policy),
+      budgetTokens: Number(run.budget_tokens),
+      sources: run.source_refs,
+      attempts: attempts.map((a) => ({
+        number: a.number,
+        status: a.status,
+        started_at: iso(a.started_at)!,
+        finished_at: iso(a.finished_at),
+        error: a.error,
+        usage: a.usage_status
+          ? {
+              status: a.usage_status,
+              input: count(a.input_tokens),
+              output: count(a.output_tokens),
+              cacheRead: count(a.cache_read_tokens),
+              cacheWrite: count(a.cache_write_tokens),
+            }
+          : null,
+      })),
+      steps: steps.map((s) => ({
+        attempt: s.attempt,
+        name: s.name,
+        status: s.status,
+        started_at: iso(s.started_at)!,
+        finished_at: iso(s.finished_at),
+        error: s.error,
+      })),
+    };
+  }
   const result = (
     await tx.query('select *,expires_at<=now() expired from agent_results where run_id=$1', [runId])
   ).rows[0];
@@ -143,6 +198,7 @@ export async function shareRun(user: string, conversation: string, runId: string
     ]);
     const message = await getMessage(tx, row.id);
     await emit(tx, conversation, 'message.upsert', message);
+    await step(tx, runId, null, 'publication', 'completed');
     await updateRun(tx, runId, 'completed');
     return message;
   });

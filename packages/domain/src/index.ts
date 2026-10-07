@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto';
-import { pool, transaction, enqueueSummary, type Tx } from '../../db/src/index.js';
+import { pool, transaction, enqueueSummary, SUMMARY_QUEUE, type Tx } from '../../db/src/index.js';
 import { openKey } from './secrets.js';
 import {
   RunLimits,
@@ -13,6 +13,13 @@ import { availableAgents, createBuiltInAgents, pinnedAgentVersion } from './agen
 import { selectRunScope } from './run-scope.js';
 import { reserveBudget, resolvedPolicy, settleBudget } from './run-policy.js';
 import { invalidateResults, purgeExpiredResults, runView, validSources } from './run-results.js';
+import {
+  claimAttempt,
+  ownedAttempt,
+  step,
+  finishAttempt,
+  recoverExecutions,
+} from './run-execution.js';
 
 export class DomainError extends Error {
   constructor(
@@ -312,7 +319,10 @@ export async function snapshot(user: string, conversation: string, before?: stri
     await purgeExpiredResults(tx, conversation);
     const runRows = (
       await tx.query(
-        'select id,status,provider,error,agent_id,agent_version from agent_runs where conversation_id=$1 and requester_id=$2 order by created_at desc limit 10',
+        `select id,status,provider,error,agent_id,agent_version from agent_runs where conversation_id=$1 and requester_id=$2
+         and (status in ('queued','running','retrying','cancelling') or id in
+           (select id from agent_runs where conversation_id=$1 and requester_id=$2 order by created_at desc limit 10))
+         order by created_at desc`,
         [conversation, user],
       )
     ).rows;
@@ -471,6 +481,7 @@ export async function startSummary(
       )
     ).rows[0];
     await enqueueSummary(tx, run.id);
+    await tx.query('update agent_runs set queue_name=$2 where id=$1', [run.id, SUMMARY_QUEUE]);
     await emit(tx, conversation, 'run.updated', run);
     return runView(tx, user, run.id);
   });
@@ -526,12 +537,36 @@ export async function updateRun(
   status: AgentRun['status'],
   error: string | null = null,
 ) {
-  const run = (
-    await tx.query('update agent_runs set status=$2,error=$3 where id=$1 returning *', [
+  const initial = (await tx.query('select conversation_id from agent_runs where id=$1', [id]))
+    .rows[0];
+  if (!initial) throw new DomainError(404, 'Run not found');
+  await tx.query('select id from conversations where id=$1 for update', [initial.conversation_id]);
+  const previous = (await tx.query('select * from agent_runs where id=$1 for update', [id]))
+    .rows[0];
+  const transitions: Record<string, string[]> = {
+    queued: ['running', 'cancelled', 'failed'],
+    running: ['retrying', 'cancelling', 'completed', 'failed', 'cancelled'],
+    retrying: ['running', 'cancelling', 'cancelled', 'failed'],
+    cancelling: ['cancelled'],
+    completed: [],
+    failed: [],
+    cancelled: [],
+  };
+  if (previous.status !== status && !transitions[previous.status]?.includes(status))
+    throw new DomainError(409, 'Illegal run transition');
+  if (['completed', 'failed', 'cancelled'].includes(status) && previous.active_attempt_id)
+    await finishAttempt(
+      tx,
       id,
-      status,
+      previous.active_attempt_id,
+      status === 'completed' ? 'completed' : status,
       error,
-    ])
+    );
+  const run = (
+    await tx.query(
+      "update agent_runs set status=$2,error=$3,finished_at=case when $2 in ('completed','failed','cancelled') then coalesce(finished_at,now()) else null end where id=$1 returning *",
+      [id, status, error],
+    )
   ).rows[0];
   await emit(tx, run.conversation_id, 'run.updated', {
     id,
@@ -547,7 +582,13 @@ export async function updateRun(
 export async function prepareRun(id: string) {
   return transaction(async (tx) => {
     const run = (await tx.query('select * from agent_runs where id=$1', [id])).rows[0];
-    if (!run || ['completed', 'cancelled'].includes(run.status)) return null;
+    if (!run) return null;
+    await tx.query('select id from conversations where id=$1 for update', [run.conversation_id]);
+    Object.assign(
+      run,
+      (await tx.query('select * from agent_runs where id=$1 for update', [id])).rows[0],
+    );
+    if (['completed', 'failed', 'cancelled', 'cancelling'].includes(run.status)) return null;
     if (!run.resolved_policy || !run.coverage) {
       await updateRun(tx, id, 'cancelled', 'Legacy run requires a new scoped invocation');
       return null;
@@ -563,8 +604,13 @@ export async function prepareRun(id: string) {
       await updateRun(tx, id, 'cancelled', 'Conversation or agent access was revoked');
       return null;
     }
+    Object.assign(
+      run,
+      (await tx.query('select * from agent_runs where id=$1 for update', [id])).rows[0],
+    );
+    if (run.active_attempt_id) return null;
     if (
-      ['completed', 'cancelled'].includes(
+      ['completed', 'failed', 'cancelled', 'cancelling'].includes(
         (await tx.query('select status from agent_runs where id=$1', [id])).rows[0].status,
       )
     )
@@ -605,18 +651,33 @@ export async function prepareRun(id: string) {
       await updateRun(tx, id, 'cancelled', 'Agent policy changed');
       return null;
     }
-    if (!(await validSources(tx, run)))
-      throw new Error('Source messages changed during generation');
+    if (!(await validSources(tx, run))) {
+      await updateRun(
+        tx,
+        id,
+        'failed',
+        'Source messages changed before generation. Start a new run.',
+      );
+      return null;
+    }
     let apiKey: string | undefined;
     if (config.provider !== 'test') {
-      if (!config.key_ciphertext) throw new Error('Workspace LLM key is missing');
-      apiKey = openKey(config.key_ciphertext);
+      try {
+        if (!config.key_ciphertext) throw new Error('Key missing');
+        apiKey = openKey(config.key_ciphertext);
+      } catch {
+        await updateRun(tx, id, 'failed', 'Workspace model credentials are unavailable');
+        return null;
+      }
     }
     await updateRun(tx, id, 'running');
     const messages: Message[] = [];
     for (const ref of run.source_refs) messages.push(await getMessage(tx, ref.id));
+    const attempt = await claimAttempt(tx, run);
+    if (!attempt) return null;
     return {
       run,
+      attempt,
       agent: await pinnedAgentVersion(tx, run.agent_id, run.agent_version),
       messages: messages as Message[],
       configuration: {
@@ -633,12 +694,23 @@ export async function prepareRun(id: string) {
 }
 export async function completeRun(
   id: string,
+  token: string,
   sources: Message[],
   output: { body: string; citations: string[] },
 ) {
   return transaction(async (tx) => {
-    const run = (await tx.query('select * from agent_runs where id=$1', [id])).rows[0];
-    if (!run || ['completed', 'cancelled'].includes(run.status)) return;
+    const initial = (await tx.query('select * from agent_runs where id=$1', [id])).rows[0];
+    if (!initial) return;
+    await tx.query('select id from conversations where id=$1 for update', [
+      initial.conversation_id,
+    ]);
+    const run = (await tx.query('select * from agent_runs where id=$1 for update', [id])).rows[0];
+    if (['completed', 'failed', 'cancelled'].includes(run.status)) return;
+    await ownedAttempt(tx, id, token);
+    if (run.cancellation_requested_at || run.status === 'cancelling') {
+      await updateRun(tx, id, 'cancelled', run.error);
+      return;
+    }
     if (new Date(run.deadline_at).getTime() <= Date.now()) {
       await updateRun(tx, id, 'cancelled', 'Run deadline expired');
       return;
@@ -695,21 +767,14 @@ export async function completeRun(
       "insert into agent_results(run_id,body,citations,expires_at) values($1,$2,$3,now()+($4 * interval '1 day')) on conflict(run_id) do nothing",
       [id, output.body, [...new Set(output.citations)], policy.retentionDays],
     );
+    await step(tx, id, token, 'generation', 'completed');
+    await step(tx, id, token, 'validation', 'completed');
+    await step(tx, id, token, 'result', 'completed');
     await updateRun(tx, id, 'completed');
   });
 }
 export async function maintainAgentRuns() {
   // Purging holds result rows only; release them before taking conversation locks.
   await transaction((tx) => purgeExpiredResults(tx));
-  await transaction(async (tx) => {
-    await tx.query(`select id from conversations where id in
-      (select conversation_id from agent_runs where deadline_at<=now() and status in ('queued','running','failed'))
-      order by id for update`);
-    const runs = (
-      await tx.query(
-        "select id from agent_runs where deadline_at<=now() and status in ('queued','running','failed')",
-      )
-    ).rows;
-    for (const run of runs) await updateRun(tx, run.id, 'cancelled', 'Run deadline expired');
-  });
+  await recoverExecutions();
 }

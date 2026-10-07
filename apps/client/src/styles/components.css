@@ -28,6 +28,30 @@
 }
 
 /* Button */
+.private-result-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+.run-history,
+.run-detail-sources {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  padding: var(--space-3);
+}
+.run-detail-steps small {
+  display: block;
+  color: var(--text-secondary);
+}
+.run-detail-steps li {
+  margin-bottom: var(--space-3);
+}
+.dialog.dialog--run-details {
+  width: min(760px, calc(100vw - 48px));
+}
+
 .btn {
   --btn-h: var(--control-md);
   display: inline-flex;

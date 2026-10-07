@@ -1,11 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import { transaction, type Tx } from '../../db/src/index.js';
-import { DomainError, workspaceAccess, updateRun, summaryAccess } from './index.js';
-import { settleBudget } from './run-policy.js';
+import { DomainError, workspaceAccess, updateRun, summaryAccess, channelAccess } from './index.js';
+import { resolvedPolicy, settleBudget } from './run-policy.js';
+import { ownedAttempt, step } from './run-execution.js';
 import { sealKey, openKey } from './secrets.js';
 import { llmBaseUrl, llmHeaders } from './llm-connection.js';
 import {
   LlmInput,
+  RunLimits,
   ModelListInput,
   MemberInput,
   type Conversation,
@@ -263,29 +265,54 @@ export async function usage(user: string, workspace: string) {
     return { members, models };
   });
 }
-export async function beginUsage(runId: string) {
+export async function beginUsage(runId: string, token: string) {
   return transaction(async (tx) => {
     const initial = (await tx.query('select * from agent_runs where id=$1', [runId])).rows[0];
     if (!initial) throw new DomainError(404, 'Run not found');
     await summaryAccess(tx, initial);
     const run = (await tx.query('select * from agent_runs where id=$1 for update', [runId]))
       .rows[0];
+    await ownedAttempt(tx, runId, token);
+    const channel = await channelAccess(tx, run.requester_id, run.conversation_id);
+    const config = (
+      await tx.query('select revision from workspace_llm where workspace_id=$1 for share', [
+        channel.workspace_id,
+      ])
+    ).rows[0];
+    const policy = await resolvedPolicy(
+      tx,
+      channel.workspace_id,
+      run.agent_id,
+      run.conversation_id,
+      run.scope.requestedLimits,
+    );
+    if (
+      config.revision !== run.config_revision ||
+      JSON.stringify(policy) !== JSON.stringify(RunLimits.parse(run.resolved_policy))
+    )
+      throw new DomainError(409, 'Run policy or configuration changed');
     if (
       run.status !== 'running' ||
+      run.cancellation_requested_at ||
       !run.resolved_policy ||
       run.attempts_started >= run.resolved_policy.maxAttempts
     )
       throw new DomainError(409, 'Run cannot start another model attempt');
+    if ((await tx.query('select 1 from llm_usage where attempt_id=$1', [token])).rowCount)
+      throw new DomainError(409, 'Model attempt already started');
+    await step(tx, runId, token, 'generation', 'running');
     await tx.query('update agent_runs set attempts_started=attempts_started+1 where id=$1', [
       runId,
     ]);
-    return (
+    const usageId = (
       await tx.query(
-        `insert into llm_usage(run_id,workspace_id,participant_id,provider,model)
-    select r.id,c.workspace_id,r.requester_id,r.provider,r.model from agent_runs r join conversations c on c.id=r.conversation_id where r.id=$1 returning id`,
-        [runId],
+        `insert into llm_usage(run_id,workspace_id,participant_id,provider,model,attempt_id)
+    select r.id,c.workspace_id,r.requester_id,r.provider,r.model,$2 from agent_runs r join conversations c on c.id=r.conversation_id where r.id=$1 and $2::uuid is not null returning id`,
+        [runId, token],
       )
     ).rows[0].id as string;
+    await updateRun(tx, runId, 'running');
+    return usageId;
   });
 }
 export type Tokens = {

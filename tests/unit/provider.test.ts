@@ -26,6 +26,35 @@ afterEach(() => {
   vi.unstubAllEnvs();
 });
 describe('OpenAI-compatible summary adapter', () => {
+  it('aborts an in-flight provider call without exposing its raw failure', async () => {
+    const controller = new AbortController();
+    let started!: () => void;
+    const ready = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        (_url: unknown, init: RequestInit) =>
+          new Promise<Response>((_resolve, reject) => {
+            init.signal!.addEventListener(
+              'abort',
+              () => reject(new Error('private prompt and key')),
+              { once: true },
+            );
+            started();
+          }),
+      ),
+    );
+    const pending = summarize(messages, { ...configuration, abortSignal: controller.signal });
+    const rejected = expect(pending).rejects.toThrow('Model request');
+    await ready;
+    controller.abort();
+    await rejected;
+    await expect(
+      summarize(messages, { ...configuration, abortSignal: controller.signal }),
+    ).rejects.toThrow();
+  });
   it('enforces resolved output and full input limits before sending credentials', async () => {
     const fetch = vi.fn().mockResolvedValue(response());
     vi.stubGlobal('fetch', fetch);

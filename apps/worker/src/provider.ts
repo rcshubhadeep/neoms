@@ -18,6 +18,7 @@ export type ModelConfiguration = {
   apiKey?: string;
   maxContextTokens?: number;
   maxOutputTokens?: number;
+  abortSignal?: AbortSignal;
 };
 
 function providerFailure(error: unknown) {
@@ -53,6 +54,7 @@ export async function executeAgent(
 ) {
   const limits: Partial<ModelConfiguration> =
     typeof configuration === 'string' ? {} : configuration;
+  limits.abortSignal?.throwIfAborted();
   if (limits.maxContextTokens && estimateInput(agent, messages) > limits.maxContextTokens)
     throw new Error('Model input exceeds the resolved context policy');
   const {
@@ -115,7 +117,9 @@ export async function executeAgent(
       ...prompt,
       maxOutputTokens: limits.maxOutputTokens ?? 2000,
       maxRetries: 0, // Queue retries are recorded as separate usage attempts.
-      abortSignal: AbortSignal.timeout(60000),
+      abortSignal: limits.abortSignal
+        ? AbortSignal.any([limits.abortSignal, AbortSignal.timeout(60000)])
+        : AbortSignal.timeout(60000),
     });
   } catch (error) {
     throw providerFailure(error);

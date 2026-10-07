@@ -194,11 +194,13 @@ export function Callout({ tone, children }: { tone?: 'danger'; children: ReactNo
 
 export function Dialog({
   title,
+  className = '',
   description,
   onClose,
   children,
 }: {
   title: string;
+  className?: string;
   description?: ReactNode;
   onClose: () => void;
   children: ReactNode;
@@ -264,7 +266,7 @@ export function Dialog({
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
-        className="dialog"
+        className={`dialog ${className}`}
       >
         <header className="dialog__header">
           <h2 id={titleId} className="dialog__title">

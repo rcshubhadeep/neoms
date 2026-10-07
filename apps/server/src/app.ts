@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { requestCancellation } from '../../../packages/domain/src/run-execution.js';
 import { cors } from 'hono/cors';
 import { streamSSE } from 'hono/streaming';
 import { bodyLimit } from 'hono/body-limit';
@@ -387,20 +388,11 @@ app.patch('/v1/workspaces/:workspace/agent-policy', async (c) =>
 );
 app.post('/v1/conversations/:conversation/runs/:run/cancel', async (c) =>
   c.json(
-    await transaction(async (tx) => {
-      const conversation = id(c.req.param('conversation'));
-      await domain.channelAccess(tx, c.get('participant').id, conversation);
-      const run = (
-        await tx.query(
-          'select * from agent_runs where id=$1 and conversation_id=$2 and requester_id=$3',
-          [id(c.req.param('run')), conversation, c.get('participant').id],
-        )
-      ).rows[0];
-      if (!run) throw new domain.DomainError(404, 'Run not found');
-      if (!['completed', 'cancelled'].includes(run.status))
-        await domain.updateRun(tx, run.id, 'cancelled');
-      return { ok: true };
-    }),
+    await requestCancellation(
+      c.get('participant').id,
+      id(c.req.param('conversation')),
+      id(c.req.param('run')),
+    ),
   ),
 );
 app.get('/v1/conversations/:conversation/events', async (c) => {

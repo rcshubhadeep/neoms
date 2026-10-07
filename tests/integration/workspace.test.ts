@@ -8,6 +8,7 @@ import { openKey } from '../../packages/domain/src/secrets.js';
 import { app } from '../../apps/server/src/app.js';
 import { summarize } from '../../apps/worker/src/provider.js';
 import { readRun, shareRun } from '../../packages/domain/src/run-results.js';
+import { failAttempt } from '../../packages/domain/src/run-execution.js';
 const auth = createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_SECRET_KEY!, {
   auth: { persistSession: false },
 });
@@ -17,7 +18,7 @@ afterEach(async () => {
   await transaction(async (tx) => {
     const runs = (
       await tx.query(
-        "select r.id from agent_runs r join conversations c on c.id=r.conversation_id where c.workspace_id=any($1) and r.status in ('queued','running','failed')",
+        "select r.id from agent_runs r join conversations c on c.id=r.conversation_id where c.workspace_id=any($1) and r.status in ('queued','running','retrying','cancelling')",
         [workspaces],
       )
     ).rows;
@@ -119,7 +120,7 @@ describe('channels and private direct messages', () => {
     expect((await domain.startSummary(bob.id, dm.id, requestId)).id).toBe(run.id);
     const context = (await domain.prepareRun(run.id))!;
     const summary = await summarize(context.messages, context.configuration);
-    await domain.completeRun(run.id, context.messages, summary);
+    await domain.completeRun(run.id, context.attempt.id, context.messages, summary);
     expect((await readRun(bob.id, dm.id, run.id)).result).toMatchObject({
       body: summary.body,
       citations: summary.citations,
@@ -225,7 +226,7 @@ describe('workspace administration', () => {
     const visible = await (await request(bob, '/workspaces')).json();
     expect(visible.map((w: { id: string }) => w.id)).toContain(other);
     expect(visible.map((w: { id: string }) => w.id)).not.toContain(workspace);
-    await domain.completeRun(run.id, context.messages, {
+    await domain.completeRun(run.id, context.attempt.id, context.messages, {
       body: 'Late reply',
       citations: [context.messages[0].id],
     });
@@ -266,7 +267,7 @@ it('cancels a DM summary when its requesting participant is disabled before publ
   const context = (await domain.prepareRun(run.id))!;
   try {
     await admin.updateMember(alice.id, workspace, eve.id, { enabled: false });
-    await domain.completeRun(run.id, context.messages, {
+    await domain.completeRun(run.id, context.attempt.id, context.messages, {
       body: 'Must not be published',
       citations: [context.messages[0].id],
     });
@@ -443,7 +444,7 @@ describe('OpenAI-compatible connections and discovery', () => {
       baseUrl: 'https://other.example.test/v1',
       apiKey: 'fresh-key',
     });
-    await domain.completeRun(run.id, context.messages, {
+    await domain.completeRun(run.id, context.attempt.id, context.messages, {
       body: 'Old endpoint response',
       citations: [context.messages[0].id],
     });
@@ -489,7 +490,7 @@ describe('workspace BYOK and attributable usage', () => {
       apiKey: 'not-a-real-key',
       model: 'controlled-test-model',
     });
-    const attempt = await admin.beginUsage(run.id);
+    const attempt = await admin.beginUsage(run.id, context.attempt.id);
     vi.stubGlobal(
       'fetch',
       vi.fn(async (_url: unknown, init: RequestInit) => {
@@ -522,7 +523,9 @@ describe('workspace BYOK and attributable usage', () => {
     expect(row.status).toBe('reported');
     expect(row.input_tokens).toBe('120');
     expect(row.participant_id).toBe(bob.id);
-    const retry = await admin.beginUsage(run.id);
+    await failAttempt(run.id, context.attempt.id, 'Model output was invalid');
+    const retryContext = (await domain.prepareRun(run.id))!;
+    const retry = await admin.beginUsage(run.id, retryContext.attempt.id);
     await admin.reportUsage(retry);
     const report = await admin.usage(alice.id, workspace);
     const member = report.members.find((m) => m.id === bob.id)!;
@@ -540,7 +543,7 @@ describe('workspace BYOK and attributable usage', () => {
       apiKey: 'replacement-key',
       removeKey: false,
     });
-    await domain.completeRun(run.id, context.messages, {
+    await domain.completeRun(run.id, context.attempt.id, context.messages, {
       body: 'Old configuration',
       citations: [context.messages[0].id],
     });
