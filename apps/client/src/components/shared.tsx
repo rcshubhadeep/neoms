@@ -1,3 +1,17 @@
+import { useEffect, useState } from 'react';
+export function useMediaQuery(query: string) {
+  const [matches, setMatches] = useState(() => matchMedia(query).matches);
+  useEffect(() => {
+    const list = matchMedia(query);
+    const change = () => setMatches(list.matches);
+    change();
+    list.addEventListener('change', change);
+    return () => list.removeEventListener('change', change);
+  }, [query]);
+  return matches;
+}
+// Matches the CSS breakpoint where the sidebar becomes a drawer.
+export const narrowQuery = '(max-width: 760px)';
 // A failed fetch, a timeout, or a non-JSON reply (such as a proxy error page) means the
 // server could not be reached: a connection state rather than a user error.
 export const unreachable = (error: unknown) =>

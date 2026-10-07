@@ -6,7 +6,9 @@ import {
   Lock,
   LogIn,
   LogOut,
+  Menu,
   Plus,
+  X,
   UserPlus,
   Settings,
   MessageSquare,
@@ -19,7 +21,7 @@ import type {
   Member,
 } from '../../../../packages/contracts/src/index';
 import { api, supabase, purgeConversation, purgeUser } from '../client';
-import { explain, unreachable } from './shared';
+import { explain, narrowQuery, unreachable, useMediaQuery } from './shared';
 import { formatRoute, parseRoute, type SettingsTab } from '../route';
 import {
   Avatar,
@@ -63,6 +65,10 @@ export function WorkspaceApp({ session }: { session: Session }) {
   const [channelMembers, setChannelMembers] = useState<Participant[]>([]);
   const [agentAccessRevision, setAgentAccessRevision] = useState(0);
   const [busy, setBusy] = useState(false);
+  // Below the breakpoint the sidebar is a drawer; whatever is behind it is inert while open.
+  const narrow = useMediaQuery(narrowQuery);
+  const [navOpen, setNavOpen] = useState(false);
+  const drawerOpen = narrow && navOpen;
   const current = workspaces.find((w) => w.id === workspace);
   const channel = channels.find((c) => c.id === selected);
   const loadWorkspaces = useCallback(async () => {
@@ -189,6 +195,44 @@ export function WorkspaceApp({ session }: { session: Session }) {
     addEventListener('hashchange', onHash);
     return () => removeEventListener('hashchange', onHash);
   }, []);
+  useEffect(() => setNavOpen(false), [workspace, selected, showSettings, narrow]);
+  const wasDrawerOpen = useRef(false);
+  useEffect(() => {
+    if (!drawerOpen) {
+      // Runs after the main area stops being inert. A dialog opened from the drawer
+      // has already taken focus; otherwise return it to the menu button.
+      const active = document.activeElement;
+      if (
+        wasDrawerOpen.current &&
+        (active === document.body || document.getElementById('sidebar')?.contains(active))
+      )
+        document.querySelector<HTMLElement>('.nav-toggle')?.focus();
+      wasDrawerOpen.current = false;
+      return;
+    }
+    wasDrawerOpen.current = true;
+    (
+      document.querySelector<HTMLElement>('#sidebar [aria-current="page"]') ??
+      document.querySelector<HTMLElement>('#sidebar .nav-item')
+    )?.focus();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setNavOpen(false);
+    };
+    addEventListener('keydown', onKey);
+    return () => removeEventListener('keydown', onKey);
+  }, [drawerOpen]);
+  const navToggle = (
+    <IconButton
+      label="Open navigation"
+      size="sm"
+      className="nav-toggle"
+      aria-controls="sidebar"
+      aria-expanded={drawerOpen}
+      onClick={() => setNavOpen(true)}
+    >
+      <Menu />
+    </IconButton>
+  );
   async function messagePerson(person: Member) {
     setError('');
     try {
@@ -207,6 +251,7 @@ export function WorkspaceApp({ session }: { session: Session }) {
     setError('');
     setValue('');
     setPrivate(false);
+    setNavOpen(false);
     setDialog(which);
     if (which === 'invite') {
       try {
@@ -298,7 +343,16 @@ export function WorkspaceApp({ session }: { session: Session }) {
   };
   return (
     <div className="shell">
-      <aside className="sidebar">
+      {drawerOpen && <div className="sidebar-backdrop" onClick={() => setNavOpen(false)} />}
+      <aside
+        id="sidebar"
+        className={`sidebar${drawerOpen ? ' sidebar--open' : ''}`}
+        aria-label="Navigation"
+        inert={narrow && !navOpen}
+        onClick={(e) => {
+          if ((e.target as Element).closest('.nav-item')) setNavOpen(false);
+        }}
+      >
         <div className="sidebar__workspace">
           <Mark />
           <label className="sr-only" htmlFor="workspace">
@@ -325,6 +379,14 @@ export function WorkspaceApp({ session }: { session: Session }) {
             </select>
             <ChevronsUpDown aria-hidden />
           </div>
+          <IconButton
+            label="Close navigation"
+            size="sm"
+            className="nav-close"
+            onClick={() => setNavOpen(false)}
+          >
+            <X />
+          </IconButton>
         </div>
         <div className="sidebar__actions">
           <Button variant="ghost" size="sm" icon={<Plus />} onClick={() => open('workspace')}>
@@ -475,7 +537,10 @@ export function WorkspaceApp({ session }: { session: Session }) {
           </IconButton>
         </div>
       </aside>
-      <main className="main">
+      <main className="main" inert={drawerOpen}>
+        {!(loaded && me && ((showSettings && current) || channel)) && (
+          <div className="main-bar">{navToggle}</div>
+        )}
         {offline && loaded && (
           <p className="connection-banner" role="status">
             <Dot state="waiting" /> Can’t reach the server. Reconnecting…
@@ -505,6 +570,7 @@ export function WorkspaceApp({ session }: { session: Session }) {
             me={me.id}
             tab={settingsTab}
             onTab={setSettingsTab}
+            navToggle={navToggle}
             onBack={() => setSettings(false)}
             onChanged={() => {
               void loadWorkspaces();
@@ -517,6 +583,7 @@ export function WorkspaceApp({ session }: { session: Session }) {
             me={me}
             channel={channel}
             agentAccessRevision={agentAccessRevision}
+            navToggle={navToggle}
             onRead={onRead}
             onMembers={() => open('members')}
             onRevoked={() => {

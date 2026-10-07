@@ -1,10 +1,5 @@
 /* Primitives. Each block maps to a component in src/components/ui. */
 
-.agent-picker {
-  width: auto;
-  max-width: 140px;
-}
-
 .run-controls {
   display: flex;
   flex-wrap: wrap;

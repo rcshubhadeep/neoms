@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type FormEvent } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type FormEvent,
+  type ReactNode,
+} from 'react';
 import {
   ArrowDown,
   ArrowUp,
@@ -51,6 +59,7 @@ export function Chat({
   me,
   channel,
   agentAccessRevision,
+  navToggle,
   onMembers,
   onRevoked,
   onRead,
@@ -58,6 +67,7 @@ export function Chat({
   me: Participant;
   channel: Conversation;
   agentAccessRevision: number;
+  navToggle: ReactNode;
   onMembers: () => void;
   onRevoked: () => void;
   onRead: (conversation: string, sequence: string) => void;
@@ -479,22 +489,46 @@ export function Chat({
   return (
     <>
       <header className="chat-header">
-        <h1>
-          <ChannelIcon aria-hidden />
-          {channel.name}
-          {channel.private && !direct && <span className="sr-only"> (private)</span>}
-        </h1>
+        <div className="chat-header__title">
+          {navToggle}
+          <h1>
+            <ChannelIcon aria-hidden />
+            <span className="chat-header__name">{channel.name}</span>
+            {channel.private && !direct && <span className="sr-only"> (private)</span>}
+          </h1>
+        </div>
         <div className="chat-header__actions">
           <span className="connection">
             <Dot state={status === 'Live' ? 'live' : 'waiting'} />
             {status}
           </span>
-          <Button variant="ghost" size="sm" icon={<Users />} onClick={onMembers}>
-            Members
+          <Button variant="ghost" size="sm" icon={<Users />} title="Members" onClick={onMembers}>
+            <span className="collapse-label">Members</span>
           </Button>
-          {agents.length > 0 && (
+          <Button
+            variant="signal"
+            size="sm"
+            icon={activeRun ? <Spinner /> : <Sparkles />}
+            disabled={summarizing || !!activeRun || !choice || (scopeMode === 'since' && !since)}
+            title={!choice ? 'Add an agent through Members to run it here' : undefined}
+            onClick={summarize}
+          >
+            <span className="collapse-label-xs">
+              {activeRun
+                ? 'Working…'
+                : choice?.operation === 'suggest_actions'
+                  ? 'Suggest actions'
+                  : 'Catch me up'}
+            </span>
+          </Button>
+        </div>
+      </header>
+      <div className="run-controls">
+        {agents.length > 0 && (
+          <label>
+            <span className="collapse-label-xs">Agent</span>
             <select
-              className="input agent-picker"
+              className="input"
               aria-label="Choose an agent"
               value={selectedAgent}
               disabled={summarizing || !!activeRun}
@@ -506,26 +540,10 @@ export function Chat({
                 </option>
               ))}
             </select>
-          )}
-          <Button
-            variant="signal"
-            size="sm"
-            icon={activeRun ? <Spinner /> : <Sparkles />}
-            disabled={summarizing || !!activeRun || !choice || (scopeMode === 'since' && !since)}
-            title={!choice ? 'Add an agent through Members to run it here' : undefined}
-            onClick={summarize}
-          >
-            {activeRun
-              ? 'Working…'
-              : choice?.operation === 'suggest_actions'
-                ? 'Suggest actions'
-                : 'Catch me up'}
-          </Button>
-        </div>
-      </header>
-      <div className="run-controls">
+          </label>
+        )}
         <label>
-          Agent scope{' '}
+          <span className="collapse-label-xs">Scope</span>
           <select
             className="input"
             aria-label="Agent scope"
@@ -546,7 +564,7 @@ export function Chat({
             onChange={(e) => setSince(e.target.value)}
           />
         )}
-        <span className="t-meta">Results are private until you post them.</span>
+        <span className="t-meta run-controls__hint">Results are private until you post them.</span>
       </div>
       {preview && (
         <Dialog title="Confirm limited coverage" onClose={() => setPreview(undefined)}>

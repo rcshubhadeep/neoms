@@ -292,11 +292,29 @@
   color: var(--text-strong);
 }
 .chat-header h1 svg {
+  flex-shrink: 0;
   width: 16px;
   height: 16px;
   color: var(--icon-secondary);
 }
+.chat-header__title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+}
+.chat-header__name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .chat-header__actions {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: var(--space-1);
+}
+.settings-header__bar {
   display: flex;
   align-items: center;
   gap: var(--space-1);
@@ -716,15 +734,69 @@
     padding: var(--space-10) var(--space-6);
   }
 }
+/* Narrow layout: the sidebar becomes a drawer opened from each view's header.
+   Keep this breakpoint in step with narrowQuery in components/shared.tsx. */
+.nav-toggle,
+.nav-close,
+.main-bar {
+  display: none;
+}
+.sidebar-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: calc(var(--z-popover) - 1);
+  background: var(--surface-overlay);
+  animation: fade-in var(--duration-base) var(--ease-out);
+}
 @media (max-width: 760px) {
   .shell {
-    --sidebar-width: 200px;
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .sidebar {
+    position: fixed;
+    inset: 0 auto 0 0;
+    z-index: var(--z-popover);
+    width: min(300px, 86vw);
+    visibility: hidden;
+    transform: translateX(-100%);
+    transition:
+      transform var(--duration-base) var(--ease-out),
+      visibility 0s linear var(--duration-base);
+  }
+  .sidebar--open {
+    visibility: visible;
+    transform: none;
+    box-shadow: var(--shadow-lg);
+    transition: transform var(--duration-base) var(--ease-out);
+  }
+  .nav-toggle,
+  .nav-close {
+    display: inline-flex;
+    flex-shrink: 0;
+  }
+  .main-bar {
+    display: flex;
+    padding: var(--space-2) var(--space-3);
   }
   .chat-header {
-    padding-left: var(--space-4);
+    padding: 0 var(--space-2) 0 var(--space-3);
+    gap: var(--space-2);
   }
-  .connection {
+  .connection,
+  .run-controls__hint {
     display: none;
+  }
+  .collapse-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+  }
+  .run-controls {
+    padding: var(--space-2) var(--space-3);
+    gap: var(--space-2);
   }
   .message,
   .conversation-start,
@@ -742,13 +814,26 @@
     justify-content: flex-end;
   }
 }
-@media (max-width: 560px) {
-  .shell {
-    --sidebar-width: 156px;
+@media (max-width: 480px) {
+  .collapse-label-xs {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
   }
-  .sidebar__profile div,
-  .sidebar__actions .btn svg {
-    display: none;
+  .message--private {
+    margin-left: var(--space-2);
+    margin-right: var(--space-2);
+  }
+}
+/* Touch screens have no hover, so message actions are always shown. Invisible but
+   tappable buttons would otherwise catch stray taps. */
+@media (hover: none) {
+  .message__actions {
+    opacity: 1;
+    transform: none;
   }
 }
 
@@ -873,5 +958,15 @@
 @media (max-width: 760px) {
   .workspace-settings {
     padding: var(--space-4);
+  }
+  .settings-tabs {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+  }
+  .settings-tabs .btn {
+    flex-shrink: 0;
+  }
+  .settings-header__bar {
+    margin-left: calc(-1 * var(--space-2));
   }
 }

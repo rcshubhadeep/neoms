@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useState, useRef, useId, type FormEvent } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useState,
+  useRef,
+  useId,
+  type FormEvent,
+  type ReactNode,
+} from 'react';
 import { ArrowLeft, Copy, KeyRound, Mail, Settings, Users, ChartNoAxesColumn } from 'lucide-react';
 import type {
   Invitation,
@@ -19,6 +27,7 @@ export function WorkspaceSettings({
   me,
   tab,
   onTab,
+  navToggle,
   onBack,
   onChanged,
 }: {
@@ -26,6 +35,7 @@ export function WorkspaceSettings({
   me: string;
   tab: Tab;
   onTab: (tab: Tab) => void;
+  navToggle: ReactNode;
   onBack: () => void;
   onChanged: () => void;
 }) {
@@ -181,9 +191,12 @@ export function WorkspaceSettings({
   return (
     <section className="workspace-settings" aria-label="Workspace administration">
       <header className="settings-header">
-        <Button variant="ghost" size="sm" icon={<ArrowLeft />} onClick={onBack}>
-          Back to conversations
-        </Button>
+        <div className="settings-header__bar">
+          {navToggle}
+          <Button variant="ghost" size="sm" icon={<ArrowLeft />} onClick={onBack}>
+            Back to conversations
+          </Button>
+        </div>
         <h1 className="t-title">
           <Settings aria-hidden /> Workspace settings
         </h1>
