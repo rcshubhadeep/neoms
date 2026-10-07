@@ -9,6 +9,16 @@
         "source \"$HOME/.nvm/nvm.sh\" && nvm use v24.7.0 >/dev/null && env -u PORT npm run dev"
       ],
       "port": 1420
+    },
+    {
+      "name": "neoms-dev-windows",
+      "runtimeExecutable": "powershell",
+      "runtimeArgs": [
+        "-NoProfile",
+        "-Command",
+        "Remove-Item Env:PORT -ErrorAction SilentlyContinue; npm run dev"
+      ],
+      "port": 1420
     }
   ]
 }

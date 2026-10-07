@@ -273,7 +273,9 @@ describe('private bounded agent runs', () => {
     ).rows;
     expect(JSON.stringify(persisted)).not.toContain('Requester secret result');
     const shared = await shareRun(bob, f.channel, run.id);
-    expect(shared.body).toContain('Shared by Bob');
+    expect(shared.body).not.toContain('Shared by');
+    expect(shared.shared_by_name).toBe('Bob');
+    expect(shared.share_coverage?.selectedMessages).toBeGreaterThan(0);
     expect((await domain.snapshot(alice, f.channel)).messages.some((m) => m.id === shared.id)).toBe(
       true,
     );

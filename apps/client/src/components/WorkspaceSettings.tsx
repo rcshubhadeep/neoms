@@ -12,20 +12,23 @@ import { api } from '../client';
 import { explain } from './shared';
 import { Avatar, Badge, Button, Callout, Field, Spinner } from './ui';
 import { AgentPolicySettings } from './AgentPolicySettings';
+import type { SettingsTab as Tab } from '../route';
 
-type Tab = 'members' | 'invitations' | 'llm' | 'usage' | 'agent-policy';
 export function WorkspaceSettings({
   workspace,
   me,
+  tab,
+  onTab,
   onBack,
   onChanged,
 }: {
   workspace: Workspace;
   me: string;
+  tab: Tab;
+  onTab: (tab: Tab) => void;
   onBack: () => void;
   onChanged: () => void;
 }) {
-  const [tab, setTab] = useState<Tab>('members');
   const [members, setMembers] = useState<Member[]>([]);
   const [invites, setInvites] = useState<Invitation[]>([]);
   const [config, setConfig] = useState<LlmSettings>();
@@ -198,7 +201,7 @@ export function WorkspaceSettings({
             onClick={() => {
               if (id !== tab) {
                 setLoadedTab(null);
-                setTab(id);
+                onTab(id);
               }
             }}
             aria-current={tab === id ? 'page' : undefined}

@@ -9,17 +9,23 @@ export function Login() {
   const [password, setPassword] = useState('');
   const [name, setName] = useState('');
   const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
   const [busy, setBusy] = useState(false);
   async function submit(event: FormEvent) {
     event.preventDefault();
     setBusy(true);
     setError('');
+    setNotice('');
     try {
       const result = signUp
         ? await supabase.auth.signUp({ email, password, options: { data: { name } } })
         : await supabase.auth.signInWithPassword({ email, password });
       if (result.error) throw result.error;
-      if (signUp && !result.data.session) setError('Check your email to confirm your account.');
+      if (signUp && !result.data.session) {
+        setSignUp(false);
+        setPassword('');
+        setNotice(`We sent a confirmation link to ${email}. Open it, then sign in here.`);
+      }
     } catch (e) {
       setError(explain(e));
     } finally {
@@ -94,6 +100,11 @@ export function Login() {
             onChange={(e) => setPassword(e.target.value)}
             autoComplete={signUp ? 'new-password' : 'current-password'}
           />
+          {notice && (
+            <div role="status">
+              <Callout>{notice}</Callout>
+            </div>
+          )}
           {error && <Callout tone="danger">{error}</Callout>}
           <Button
             variant="primary"
@@ -111,6 +122,7 @@ export function Login() {
             onClick={() => {
               setSignUp(!signUp);
               setError('');
+              setNotice('');
             }}
           >
             {signUp ? 'Already have an account? Sign in' : 'New here? Create an account'}

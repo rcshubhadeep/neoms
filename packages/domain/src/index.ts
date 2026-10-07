@@ -212,13 +212,15 @@ export async function changeMembership(
     return { ok: true };
   });
 }
+// Posted agent results carry who shared them and what the run covered as data, not body text.
+const messageRows = `select m.*,p.name author_name,p.kind author_kind,sp.name shared_by_name,
+  case when ar.shared_message_id is not null then r.coverage end share_coverage
+  from messages m join participants p on p.id=m.author_id
+  left join agent_results ar on ar.run_id=m.agent_run_id and ar.shared_message_id=m.id
+  left join agent_runs r on r.id=ar.run_id
+  left join participants sp on sp.id=ar.shared_by`;
 export async function getMessage(tx: Tx, id: string): Promise<Message> {
-  return (
-    await tx.query(
-      'select m.*,p.name author_name,p.kind author_kind from messages m join participants p on p.id=m.author_id where m.id=$1',
-      [id],
-    )
-  ).rows[0];
+  return (await tx.query(`${messageRows} where m.id=$1`, [id])).rows[0];
 }
 export async function emit(tx: Tx, conversation: string, type: string, data: unknown) {
   const cursor = (
@@ -312,7 +314,7 @@ export async function snapshot(user: string, conversation: string, before?: stri
     }
     const messages = (
       await tx.query(
-        'select m.*,p.name author_name,p.kind author_kind from messages m join participants p on p.id=m.author_id where m.conversation_id=$1 and ($2::timestamptz is null or (m.created_at,m.id)<($2::timestamptz,$3::uuid)) order by m.created_at desc,m.id desc limit 51',
+        `${messageRows} where m.conversation_id=$1 and ($2::timestamptz is null or (m.created_at,m.id)<($2::timestamptz,$3::uuid)) order by m.created_at desc,m.id desc limit 51`,
         [conversation, boundary?.created_at ?? null, boundary?.id ?? null],
       )
     ).rows;

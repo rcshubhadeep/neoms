@@ -225,6 +225,8 @@ export type Message = {
   created_at: string;
   updated_at: string;
   deleted_at: string | null;
+  shared_by_name?: string | null;
+  share_coverage?: Coverage | null;
 };
 export const RunInspectionOutput = z.object({
   created_at: z.string(),
@@ -350,6 +352,8 @@ export const MessageOutput = z.object({
   created_at: z.string(),
   updated_at: z.string(),
   deleted_at: z.string().nullable(),
+  shared_by_name: z.string().nullable().optional(),
+  share_coverage: CoverageOutput.nullable().optional(),
 });
 export const RunOutput = z.object({
   id: z.uuid(),

@@ -172,11 +172,8 @@ export async function shareRun(user: string, conversation: string, runId: string
     if (JSON.stringify(policy) !== JSON.stringify(RunLimits.parse(run.resolved_policy)))
       throw new DomainError(409, 'Agent policy changed. Run the agent again.');
     if (result.shared_message_id) return getMessage(tx, result.shared_message_id);
-    const author = (await tx.query('select name from participants where id=$1', [user])).rows[0]
-      .name;
     const output = SummaryOutput.parse(result);
-    const coverage = run.coverage;
-    const body = `${output.body}\n\nShared by ${author}. Covered ${coverage.selectedMessages} of ${coverage.totalMessages} messages (${coverage.from} to ${coverage.to}).`;
+    const body = output.body;
     const row = (
       await tx.query(
         'insert into messages(conversation_id,author_id,request_id,request_hash,body,citations,agent_run_id) values($1,$2,$3,$4,$5,$6,$7) returning id',

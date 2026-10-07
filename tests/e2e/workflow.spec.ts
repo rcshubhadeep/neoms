@@ -97,6 +97,10 @@ test('two people exchange, recover, summarize, and revoke access', async ({ brow
     await alice
       .getByRole('button', { name: 'Delete message Temporary message', exact: true })
       .click();
+    await alice
+      .getByRole('dialog', { name: 'Delete message?' })
+      .getByRole('button', { name: 'Delete', exact: true })
+      .click();
     await b.setOffline(false);
     await expect(
       bob.getByText('Decision: ship the pilot on Monday.', { exact: true }),

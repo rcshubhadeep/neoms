@@ -19,17 +19,34 @@ import type {
   Member,
 } from '../../../../packages/contracts/src/index';
 import { api, supabase, purgeConversation, purgeUser } from '../client';
-import { explain } from './shared';
-import { Avatar, Badge, Button, Callout, Dialog, Field, IconButton, Mark, TextArea } from './ui';
+import { explain, unreachable } from './shared';
+import { formatRoute, parseRoute, type SettingsTab } from '../route';
+import {
+  Avatar,
+  Badge,
+  Button,
+  Callout,
+  Dialog,
+  Dot,
+  Field,
+  IconButton,
+  Mark,
+  TextArea,
+} from './ui';
 import { Chat } from './Chat';
 import { WorkspaceSettings } from './WorkspaceSettings';
 export function WorkspaceApp({ session }: { session: Session }) {
+  const [initialRoute] = useState(() => parseRoute(location.hash));
   const [me, setMe] = useState<Participant>();
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
-  const [workspace, setWorkspace] = useState('');
+  const [loaded, setLoaded] = useState(false);
+  const [offline, setOffline] = useState(false);
+  const [workspace, setWorkspace] = useState(initialRoute.workspace ?? '');
   const [channels, setChannels] = useState<Conversation[]>([]);
-  const [selected, setSelected] = useState('');
-  const [settings, setSettings] = useState(false);
+  const [loadedWorkspace, setLoadedWorkspace] = useState('');
+  const [selected, setSelected] = useState(initialRoute.conversation ?? '');
+  const [settings, setSettings] = useState(!!initialRoute.settings);
+  const [settingsTab, setSettingsTab] = useState<SettingsTab>(initialRoute.settings ?? 'members');
   const [people, setPeople] = useState<Member[]>([]);
   const workspaceRef = useRef(workspace);
   workspaceRef.current = workspace;
@@ -49,9 +66,24 @@ export function WorkspaceApp({ session }: { session: Session }) {
   const current = workspaces.find((w) => w.id === workspace);
   const channel = channels.find((c) => c.id === selected);
   const loadWorkspaces = useCallback(async () => {
-    const rows = await api<Workspace[]>('/workspaces');
-    setWorkspaces(rows);
-    setWorkspace((old) => (rows.some((w) => w.id === old) ? old : rows[0]?.id || ''));
+    try {
+      const rows = await api<Workspace[]>('/workspaces');
+      setWorkspaces(rows);
+      setWorkspace((old) => (rows.some((w) => w.id === old) ? old : rows[0]?.id || ''));
+      setLoaded(true);
+      setOffline(false);
+    } catch (e) {
+      if (unreachable(e)) setOffline(true);
+      else throw e;
+    }
+  }, []);
+  const loadMe = useCallback(async () => {
+    try {
+      setMe(await api<Participant>('/me'));
+    } catch (e) {
+      if (unreachable(e)) setOffline(true);
+      else setError(explain(e));
+    }
   }, []);
   const loadChannels = useCallback(async () => {
     if (!workspace) {
@@ -66,6 +98,7 @@ export function WorkspaceApp({ session }: { session: Session }) {
         api<Member[]>(`/workspaces/${workspace}/members`),
       ]);
       if (workspaceRef.current !== workspace) return;
+      setOffline(false);
       for (const old of channelsRef.current)
         if (old.workspace_id === workspace && !rows.some((c) => c.id === old.id) && me)
           purgeConversation(me.id, old.id);
@@ -78,9 +111,11 @@ export function WorkspaceApp({ session }: { session: Session }) {
         ),
       );
       setSelected((old) => (rows.some((c) => c.id === old) ? old : rows[0]?.id || ''));
+      setLoadedWorkspace(workspace);
     } catch (e) {
       if (workspaceRef.current !== workspace) return;
-      if (e instanceof Error && 'status' in e && e.status === 403) {
+      if (unreachable(e)) setOffline(true);
+      else if (e instanceof Error && 'status' in e && e.status === 403) {
         for (const old of channelsRef.current)
           if (old.workspace_id === workspace && me) purgeConversation(me.id, old.id);
         setChannels([]);
@@ -102,20 +137,58 @@ export function WorkspaceApp({ session }: { session: Session }) {
       ),
     );
   }, []);
+  const retry = useCallback(() => {
+    if (!me) void loadMe();
+    void loadWorkspaces().catch((e) => setError(explain(e)));
+  }, [me, loadMe, loadWorkspaces]);
   useEffect(() => {
-    api<Participant>('/me')
-      .then(setMe)
-      .catch((e) => setError(explain(e)));
+    void loadMe();
     loadWorkspaces().catch((e) => setError(explain(e)));
-  }, [loadWorkspaces]);
+  }, [loadMe, loadWorkspaces]);
   useEffect(() => {
     loadChannels();
     const interval = setInterval(() => {
       void loadChannels();
-      void loadWorkspaces().catch((e) => setError(explain(e)));
+      retry();
     }, 5000);
     return () => clearInterval(interval);
-  }, [loadChannels, loadWorkspaces]);
+  }, [loadChannels, retry]);
+  const showSettings = settings && !!current && current.role !== 'member';
+  // Keep the URL in step with what is shown. User navigation adds a history entry;
+  // completing or correcting an incomplete or invalid URL replaces it.
+  const lastRoute = useRef('');
+  useEffect(() => {
+    if (!current || loadedWorkspace !== workspace) return;
+    if (!showSettings && (selected ? !channels.some((c) => c.id === selected) : channels.length))
+      return;
+    const next = formatRoute({
+      workspace,
+      conversation: showSettings ? undefined : selected || undefined,
+      settings: showSettings ? settingsTab : undefined,
+    });
+    if (location.hash !== next) {
+      if (location.hash === lastRoute.current) history.pushState(null, '', next);
+      else history.replaceState(null, '', next);
+    }
+    lastRoute.current = next;
+  }, [current, workspace, loadedWorkspace, selected, channels, showSettings, settingsTab]);
+  useEffect(() => {
+    const onHash = () => {
+      const route = parseRoute(location.hash);
+      if (!route.workspace) return;
+      if (route.workspace !== workspaceRef.current) {
+        setChannels([]);
+        setPeople([]);
+        setWorkspace(route.workspace);
+      }
+      setSelected(route.conversation ?? '');
+      setSettings(!!route.settings);
+      if (route.settings) setSettingsTab(route.settings);
+      setDialog(null);
+    };
+    addEventListener('hashchange', onHash);
+    return () => removeEventListener('hashchange', onHash);
+  }, []);
   async function messagePerson(person: Member) {
     setError('');
     try {
@@ -279,7 +352,7 @@ export function WorkspaceApp({ session }: { session: Session }) {
                     className={`nav-item${c.unread ? ' nav-item--unread' : ''}`}
                     data-unread={c.unread || undefined}
                     aria-description={c.unread ? 'Unread messages' : undefined}
-                    aria-current={!settings && selected === c.id ? 'page' : undefined}
+                    aria-current={!showSettings && selected === c.id ? 'page' : undefined}
                     key={c.id}
                     onClick={() => {
                       setSelected(c.id);
@@ -322,7 +395,7 @@ export function WorkspaceApp({ session }: { session: Session }) {
                       data-unread={c.unread || undefined}
                       aria-description={c.unread ? 'Unread messages' : undefined}
                       key={c.id}
-                      aria-current={!settings && selected === c.id ? 'page' : undefined}
+                      aria-current={!showSettings && selected === c.id ? 'page' : undefined}
                       onClick={() => {
                         setSelected(c.id);
                         setSettings(false);
@@ -371,7 +444,7 @@ export function WorkspaceApp({ session }: { session: Session }) {
             <section className="sidebar__section">
               <button
                 className="nav-item"
-                aria-current={settings ? 'page' : undefined}
+                aria-current={showSettings ? 'page' : undefined}
                 onClick={() => {
                   setSettings(true);
                   setDialog(null);
@@ -403,12 +476,35 @@ export function WorkspaceApp({ session }: { session: Session }) {
         </div>
       </aside>
       <main className="main">
+        {offline && loaded && (
+          <p className="connection-banner" role="status">
+            <Dot state="waiting" /> Can’t reach the server. Reconnecting…
+          </p>
+        )}
         {error && !dialog && <Callout tone="danger">{error}</Callout>}
-        {settings && current && current.role !== 'member' && me ? (
+        {!loaded ? (
+          offline ? (
+            <section className="empty" role="alert">
+              <Mark size={40} />
+              <h1 className="t-display">Can’t reach Neoms.</h1>
+              <p>Check your connection. We’ll keep trying in the background.</p>
+              <Button variant="primary" size="lg" pill onClick={retry}>
+                Try again
+              </Button>
+            </section>
+          ) : (
+            <section className="boot" aria-busy="true">
+              <Mark size={28} />
+              <p>Loading your workspaces…</p>
+            </section>
+          )
+        ) : showSettings && current && me ? (
           <WorkspaceSettings
             key={current.id}
             workspace={current}
             me={me.id}
+            tab={settingsTab}
+            onTab={setSettingsTab}
             onBack={() => setSettings(false)}
             onChanged={() => {
               void loadWorkspaces();
@@ -429,6 +525,11 @@ export function WorkspaceApp({ session }: { session: Session }) {
               loadChannels();
             }}
           />
+        ) : workspace && (loadedWorkspace !== workspace || !me) ? (
+          <section className="boot" aria-busy="true">
+            <Mark size={28} />
+            <p>Opening {current?.name ?? 'your workspace'}…</p>
+          </section>
         ) : (
           <section className="empty">
             <Mark size={40} />

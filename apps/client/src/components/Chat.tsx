@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type FormEvent } from 'react';
 import {
+  ArrowDown,
   ArrowUp,
   Hash,
   Lock,
@@ -32,7 +33,7 @@ import {
   type Pending,
 } from '../client';
 import { mergeMessages, advance, readEvents } from '../sync';
-import { explain } from './shared';
+import { explain, formatSpan } from './shared';
 import { RunDetails } from './RunDetails';
 import {
   Avatar,
@@ -76,6 +77,7 @@ export function Chat({
   const [selectedAgent, setSelectedAgent] = useState('');
   const [hasMore, setHasMore] = useState(false);
   const [editing, setEditing] = useState<Message | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState<Message | null>(null);
   const [editBody, setEditBody] = useState('');
   const [summarizing, setSummarizing] = useState(false);
   const [scopeMode, setScopeMode] = useState<'recent' | 'unread' | 'since'>('recent');
@@ -88,7 +90,10 @@ export function Chat({
   const pendingRef = useRef(pending);
   const runsRef = useRef(runs);
   runsRef.current = runs;
-  const bottom = useRef<HTMLDivElement>(null);
+  const scroller = useRef<HTMLDivElement>(null);
+  const following = useRef(true);
+  const restoreFromBottom = useRef<number | null>(null);
+  const [newBelow, setNewBelow] = useState(false);
   const onRevokedRef = useRef(onRevoked);
   onRevokedRef.current = onRevoked;
   const onReadRef = useRef(onRead);
@@ -304,12 +309,36 @@ export function Chat({
       document.removeEventListener('visibilitychange', schedule);
     };
   }, [channel.id, readPosition]);
-  useEffect(() => {
-    bottom.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages.length, pending.length, resultCount]);
+  // Follow new activity only while the reader is at the bottom; otherwise offer a jump.
+  function onScroll() {
+    const el = scroller.current;
+    if (!el) return;
+    following.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    if (following.current) setNewBelow(false);
+  }
+  function jumpToLatest() {
+    following.current = true;
+    setNewBelow(false);
+    scroller.current?.scrollTo({ top: scroller.current.scrollHeight, behavior: 'smooth' });
+  }
+  const firstId = messages[0]?.id;
+  const lastId = messages.at(-1)?.id;
+  useLayoutEffect(() => {
+    const el = scroller.current;
+    if (!el || restoreFromBottom.current === null) return;
+    el.scrollTop = el.scrollHeight - restoreFromBottom.current;
+    restoreFromBottom.current = null;
+  }, [firstId]);
+  useLayoutEffect(() => {
+    const el = scroller.current;
+    if (!el) return;
+    if (following.current) el.scrollTop = el.scrollHeight;
+    else setNewBelow(true);
+  }, [lastId, pending.length, resultCount]);
   async function send(event: FormEvent) {
     event.preventDefault();
     if (!draft.trim() || revoked.current) return;
+    following.current = true;
     updatePending([
       ...pendingRef.current,
       { requestId: crypto.randomUUID(), body: draft.trim(), status: 'sending' },
@@ -393,6 +422,8 @@ export function Chat({
       const snap = await api<Snapshot>(
         `/conversations/${channel.id}/messages?before=${messages[0].id}`,
       );
+      const el = scroller.current;
+      if (el && snap.messages.length) restoreFromBottom.current = el.scrollHeight - el.scrollTop;
       setMessages((old) => mergeMessages(old, snap.messages));
       setHasMore(snap.hasMore);
     } catch (e) {
@@ -525,16 +556,37 @@ export function Chat({
             {preview.coverage.omittedMessages} are excluded by the history, message, or context
             limits.
           </p>
-          <p>
-            Covered: {preview.coverage.from && new Date(preview.coverage.from).toLocaleString()} –{' '}
-            {preview.coverage.to && new Date(preview.coverage.to).toLocaleString()}.
-          </p>
+          <p>Covered: {formatSpan(preview.coverage.from, preview.coverage.to)}.</p>
           <Button variant="primary" disabled={summarizing} onClick={() => startRun(preview)}>
             Run with this coverage
           </Button>
         </Dialog>
       )}
-      <div className="conversation">
+      {confirmDelete && (
+        <Dialog
+          title="Delete message?"
+          description="This can’t be undone. Others will see “Message deleted” in its place, and agent results that cite it will be marked outdated."
+          onClose={() => setConfirmDelete(null)}
+        >
+          <blockquote className="delete-preview">{confirmDelete.body}</blockquote>
+          <div className="dialog__actions">
+            <Button variant="ghost" onClick={() => setConfirmDelete(null)}>
+              Cancel
+            </Button>
+            <Button
+              variant="danger"
+              onClick={() => {
+                const message = confirmDelete;
+                setConfirmDelete(null);
+                void mutate(message, true);
+              }}
+            >
+              Delete
+            </Button>
+          </div>
+        </Dialog>
+      )}
+      <div className="conversation" ref={scroller} onScroll={onScroll}>
         {inspected && (
           <RunDetails
             run={inspected}
@@ -569,7 +621,11 @@ export function Chat({
           </h2>
           <p>
             {direct
-              ? 'Only the two participants can read and post here. Assistants are not added to direct messages.'
+              ? `Only you and ${channel.name} can read and post here.${
+                  agents.length
+                    ? ` Agents aren’t members, but you can ask ${agents[0].name} to catch you up. Only you see the result unless you post it.`
+                    : ''
+                }`
               : 'Messages here stay put, even when you’re away. Agents in this channel only see what is shared in it.'}
           </p>
         </div>
@@ -621,7 +677,10 @@ export function Chat({
                       <strong>{message.author_name}</strong>
                       {agent && <Badge>Agent</Badge>}
                       <time dateTime={message.created_at}>{time(message.created_at)}</time>
-                      {message.revision > 1 && !message.deleted_at && <small>edited</small>}
+                      {message.shared_by_name && <small>Shared by {message.shared_by_name}</small>}
+                      {message.revision > 1 && !message.deleted_at && !message.shared_by_name && (
+                        <small>edited</small>
+                      )}
                     </div>
                   )}
                   {editing?.id === message.id ? (
@@ -657,6 +716,13 @@ export function Chat({
                   ) : (
                     <p className="message__body">
                       {message.deleted_at ? 'Message deleted' : message.body}
+                    </p>
+                  )}
+                  {message.share_coverage && !message.stale && (
+                    <p className="t-meta">
+                      Covered {message.share_coverage.selectedMessages} of{' '}
+                      {message.share_coverage.totalMessages} messages ·{' '}
+                      {formatSpan(message.share_coverage.from, message.share_coverage.to)}
                     </p>
                   )}
                   {message.citations.length > 0 &&
@@ -697,7 +763,7 @@ export function Chat({
                         size="xs"
                         label={`Delete message ${message.body}`}
                         title="Delete"
-                        onClick={() => mutate(message, true)}
+                        onClick={() => setConfirmDelete(message)}
                       >
                         <Trash2 />
                       </IconButton>
@@ -731,8 +797,7 @@ export function Chat({
                     {run.coverage.omittedMessages
                       ? ` · ${run.coverage.omittedMessages} omitted`
                       : ''}{' '}
-                    · {run.coverage.from && new Date(run.coverage.from).toLocaleString()} –{' '}
-                    {run.coverage.to && new Date(run.coverage.to).toLocaleString()}
+                    · {formatSpan(run.coverage.from, run.coverage.to)}
                   </p>
                 )}
                 {run.result!.stale ? (
@@ -801,9 +866,13 @@ export function Chat({
             </div>
           </article>
         ))}
-        <div ref={bottom} />
       </div>
       <footer className="composer-area">
+        {newBelow && (
+          <button type="button" className="jump-latest" onClick={jumpToLatest}>
+            New messages <ArrowDown aria-hidden />
+          </button>
+        )}
         {error && <Callout tone="danger">{error}</Callout>}
         {activeRun && (
           <div className="run-status" role="status">
